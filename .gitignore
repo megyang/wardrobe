@@ -1,0 +1,14 @@
+.DS_Store
+DerivedData/
+DerivedData*/
+.build/
+Companion/node_modules/
+Companion/data/
+Companion/.env
+Companion/tmp/
+Companion/output/
+Companion/*.png
+Companion/*.jpg
+Companion/*.jpeg
+xcuserdata/
+*.xcuserstate
