@@ -17,11 +17,10 @@ enum WearwellSchemaV1: VersionedSchema {
 struct WearwellApp: App {
     private let container: ModelContainer = {
         let schema = Schema(versionedSchema: WearwellSchemaV1.self)
-        let isTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
-            cloudKitDatabase: isTesting ? .none : .private(DataProtectionController.cloudContainerIdentifier)
+            cloudKitDatabase: .none
         )
         do { return try ModelContainer(for: schema, configurations: [configuration]) }
         catch { fatalError("Unable to create Wearwell store: \(error)") }

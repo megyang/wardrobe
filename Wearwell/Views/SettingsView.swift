@@ -21,14 +21,14 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section { EditorialHeader(eyebrow: "Private local AI", title: "Mac companion", subtitle: "AI actions reuse your Mac's ChatGPT-backed Codex login. There is no API key in the app.") }
-            Section("iCloud protection") {
+            Section("Local data protection") {
                 LabeledContent("Status") {
                     StatusPill(
-                        text: protection.cloudState.title,
-                        color: protection.cloudState == .available ? WearwellTheme.sage : WearwellTheme.coral
+                        text: protection.storageState.title,
+                        color: protection.storageState == .available ? WearwellTheme.sage : WearwellTheme.coral
                     )
                 }
-                Text(protection.cloudState.detail).font(.caption).foregroundStyle(.secondary)
+                Text(protection.storageState.detail).font(.caption).foregroundStyle(.secondary)
                 if protection.isMigrating {
                     ProgressView(
                         "Protecting existing pictures…",
@@ -36,14 +36,14 @@ struct SettingsView: View {
                         total: Double(max(1, protection.migrationTotal))
                     )
                 } else if protection.migrationComplete {
-                    Label("Existing pictures are included in cloud sync", systemImage: "checkmark.icloud")
+                    Label("Existing pictures are protected locally", systemImage: "checkmark.shield")
                         .font(.caption).foregroundStyle(WearwellTheme.sage)
                 }
                 if let migrationError = protection.migrationError {
                     Text("Picture migration will retry next launch: \(migrationError)").font(.caption).foregroundStyle(.red)
                 }
-                Button("Check iCloud again") { Task { await protection.refreshCloudStatus() } }
-                Text("Private wardrobe data uses your personal iCloud storage quota. Sync may take a little while after a change.")
+                Button("Check storage again") { protection.refreshStorageStatus() }
+                Text("This development build keeps wardrobe data on this iPhone. Use Backup and Restore below to move or recover it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Backup and restore") {

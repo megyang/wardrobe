@@ -1,24 +1,23 @@
-import CloudKit
 import SwiftData
 import SwiftUI
 
-enum CloudProtectionState: Equatable {
+enum DataProtectionState: Equatable {
     case checking
     case available
     case unavailable(String)
 
     var title: String {
         switch self {
-        case .checking: "Checking iCloud…"
-        case .available: "iCloud is available"
-        case .unavailable: "iCloud needs attention"
+        case .checking: "Preparing local storage…"
+        case .available: "Local storage is ready"
+        case .unavailable: "Local storage needs attention"
         }
     }
 
     var detail: String {
         switch self {
-        case .checking: "Wearwell is checking your private iCloud database."
-        case .available: "Wardrobe records and pictures sync privately through your Apple ID."
+        case .checking: "Wearwell is preparing its protected on-device database."
+        case .available: "Wardrobe records and pictures are stored privately on this iPhone."
         case .unavailable(let message): message
         }
     }
@@ -26,13 +25,11 @@ enum CloudProtectionState: Equatable {
 
 @MainActor
 final class DataProtectionController: ObservableObject {
-    @Published private(set) var cloudState: CloudProtectionState = .checking
+    @Published private(set) var storageState: DataProtectionState = .checking
     @Published private(set) var migrationCurrent = 0
     @Published private(set) var migrationTotal = 0
     @Published private(set) var migrationError: String?
     @Published private(set) var migrationComplete = false
-
-    static let cloudContainerIdentifier = "iCloud.com.wearwell.app"
 
     private let modelContainer: ModelContainer
     private var started = false
@@ -45,35 +42,17 @@ final class DataProtectionController: ObservableObject {
 
     func start() async {
         guard !started else {
-            await refreshCloudStatus()
+            refreshStorageStatus()
             return
         }
         started = true
         await AssetStore.shared.configure(container: modelContainer)
-        await refreshCloudStatus()
+        refreshStorageStatus()
         await migrateLegacyAssets()
     }
 
-    func refreshCloudStatus() async {
-        cloudState = .checking
-        do {
-            switch try await CKContainer(identifier: Self.cloudContainerIdentifier).accountStatus() {
-            case .available:
-                cloudState = .available
-            case .noAccount:
-                cloudState = .unavailable("Sign in to iCloud in Settings to protect and restore your wardrobe.")
-            case .restricted:
-                cloudState = .unavailable("This device restricts iCloud access. Wearwell will keep working locally.")
-            case .couldNotDetermine:
-                cloudState = .unavailable("Wearwell could not determine the iCloud account status. It will retry later.")
-            case .temporarilyUnavailable:
-                cloudState = .unavailable("iCloud is temporarily unavailable. Local changes are safe and will sync later.")
-            @unknown default:
-                cloudState = .unavailable("The iCloud account status is unknown. Local changes remain available.")
-            }
-        } catch {
-            cloudState = .unavailable("Could not contact iCloud: \(error.localizedDescription)")
-        }
+    func refreshStorageStatus() {
+        storageState = .available
     }
 
     private func migrateLegacyAssets() async {
@@ -95,8 +74,7 @@ final class DataProtectionController: ObservableObject {
     }
 }
 
-/// Observes CloudKit-delivered blobs and materializes any missing local cache
-/// files. The query updates as remote records arrive.
+/// Observes persisted blobs and materializes any missing local cache files.
 struct AssetCacheHydrator: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \AssetBlob.updatedAt) private var blobs: [AssetBlob]

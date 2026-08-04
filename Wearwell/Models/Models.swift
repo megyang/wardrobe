@@ -382,7 +382,7 @@ struct StyleProfileDTO: Codable, Equatable {
     }
 }
 
-/// CloudKit-backed source of truth for every image. `WearwellAssets` remains a
+/// SwiftData-backed source of truth for every image. `WearwellAssets` remains a
 /// rebuildable local cache so existing synchronous image rendering stays fast.
 @Model final class AssetBlob {
     var id: UUID

@@ -313,7 +313,6 @@
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Wearwell connects to your paired Mac companion for optional AI styling.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Wearwell imports only the clothing photos you select.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -349,7 +348,6 @@
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Wearwell connects to your paired Mac companion for optional AI styling.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Wearwell imports only the clothing photos you select.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
