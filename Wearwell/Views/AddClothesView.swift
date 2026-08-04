@@ -46,20 +46,7 @@ struct AddClothesView: View {
                     EditorialHeader(eyebrow: "Build your closet", title: "Add clothes", subtitle: "Wearwell sees only the images you explicitly choose.")
                     PhotosPicker(selection: $pickerItems, maxSelectionCount: 12, matching: .images) { ImportCard(icon: "photo.on.rectangle.angled", title: "Choose photos", detail: "Detect every visible garment, then review each one.") }
                     Button { showCamera = true } label: { ImportCard(icon: "camera", title: "Take a photo", detail: "Photograph one item or a complete worn look.") }.buttonStyle(.plain)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Paste an image or product-page URL", systemImage: "link").font(.headline)
-                        TextField("https://…", text: $urlText)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .submitLabel(.go)
-                            .onSubmit { guard canImportURL else { return }; Task { await importURL() } }
-                            .padding(12)
-                            .background(.white, in: RoundedRectangle(cornerRadius: 10))
-                        Button(importingURL ? "Importing…" : "Import link") { Task { await importURL() } }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!canImportURL)
-                    }.padding(20).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+                    urlImportCard
                     if working {
                         VStack(spacing: 8) {
                             ProgressView("Luna is identifying visible clothes…")
@@ -71,8 +58,10 @@ struct AddClothesView: View {
                     if !reviews.isEmpty { reviewSection }
                 }.padding()
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .toolbar { SettingsButton(isPresented: $showSettings) }
+        .keyboardDismissToolbar()
         .onChange(of: pickerItems) { _, items in Task { await importItems(items) } }
         .sheet(isPresented: $showCamera) { CameraPicker { image in showCamera = false; guard let data = image.jpegData(compressionQuality: 0.9) else { return }; Task { await analyze(data: data, sourceURL: nil) } } }
         .task {
@@ -83,6 +72,32 @@ struct AddClothesView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refreshDrafts() } } }
+    }
+
+    private var urlImportCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Paste an image or product-page URL", systemImage: "link").font(.headline)
+            TextField("https://…", text: $urlText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .submitLabel(.go)
+                .onSubmit {
+                    guard canImportURL else { return }
+                    KeyboardController.dismiss()
+                    Task { await importURL() }
+                }
+                .padding(12)
+                .background(.white, in: RoundedRectangle(cornerRadius: 10))
+            Button(importingURL ? "Importing…" : "Import link") {
+                KeyboardController.dismiss()
+                Task { await importURL() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canImportURL)
+        }
+        .padding(20)
+        .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var jobSection: some View {
@@ -228,7 +243,9 @@ struct AddClothesView: View {
             if duplicate { continue }
             do {
                 let source = try await AssetStore.shared.save(review.sourceData, preferredExtension: "jpg")
-                let catalog = try await AssetStore.shared.save(review.catalogData ?? review.sourceData, preferredExtension: "png")
+                let rawCatalog = review.catalogData ?? review.sourceData
+                let cleanedCatalog = await preparedCatalogData(rawCatalog) ?? rawCatalog
+                let catalog = try await AssetStore.shared.save(cleanedCatalog, preferredExtension: "png")
                 context.insert(Garment(label: review.label, category: review.category, subcategory: review.subcategory, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: review.analysis.fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion))
             } catch { self.error = error.localizedDescription }
         }
@@ -285,9 +302,18 @@ struct AddClothesView: View {
             for item in draft.analyses where !reviews.contains(where: { $0.draftID == draft.id && $0.analysis.id == item.id }) {
                 let category = GarmentCategory(rawValue: item.category) ?? .tops
                 let subcategory = item.subcategory.flatMap(GarmentSubcategory.init(rawValue:))
-                reviews.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategory: subcategory?.category == category ? subcategory : nil, color: item.color, details: item.description, catalogData: item.catalogImageBase64.flatMap { Data(base64Encoded: $0) }, sourceData: sourceData, sourceURL: draft.sourceURL))
+                let catalogData = await preparedCatalogData(item.catalogImageBase64.flatMap { Data(base64Encoded: $0) })
+                reviews.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategory: subcategory?.category == category ? subcategory : nil, color: item.color, details: item.description, catalogData: catalogData, sourceData: sourceData, sourceURL: draft.sourceURL))
             }
         }
+    }
+
+    private func preparedCatalogData(_ data: Data?) async -> Data? {
+        guard let data else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            guard let image = UIImage(data: data) else { return data }
+            return AssetStore.preparedCollageImage(from: image).pngData() ?? data
+        }.value
     }
 
     private func jobLabel(_ state: String) -> String {

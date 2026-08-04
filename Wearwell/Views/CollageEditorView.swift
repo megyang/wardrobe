@@ -14,6 +14,9 @@ struct CollageEditorView: View {
     @State private var title: String
     @State private var items: [LayoutItem]
     @State private var showPicker = false
+    @State private var pickerSearch = ""
+    @State private var pickerCategory: GarmentCategory?
+    @State private var pickerSubcategory: GarmentSubcategory?
     @State private var selectedID: UUID?
     @State private var preparing: Bool
     @State private var preparedCount = 0
@@ -69,17 +72,82 @@ struct CollageEditorView: View {
     private var garmentPicker: some View {
         NavigationStack {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {
-                    ForEach(garments) { garment in
-                        Button { add(garment); showPicker = false } label: { GarmentCard(garment: garment) }.buttonStyle(.plain)
+                VStack(spacing: 16) {
+                    pickerFilters
+                    if filteredGarments.isEmpty && !showsWishlistCandidate {
+                        EmptyState(
+                            icon: "magnifyingglass",
+                            title: "No clothes found",
+                            message: "Try another search or category."
+                        )
+                        .frame(minHeight: 280)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {
+                            ForEach(filteredGarments) { garment in
+                                Button { add(garment); showPicker = false } label: { GarmentCard(garment: garment) }.buttonStyle(.plain)
+                            }
+                            if let candidate = wishlistItem, showsWishlistCandidate {
+                                Button { add(candidate); showPicker = false } label: {
+                                    VStack(alignment: .leading) { AssetImage(name: candidate.catalogAssetName).frame(height: 155); Text(candidate.label).font(.subheadline.bold()); StatusPill(text: "Considering", color: WearwellTheme.coral) }
+                                }.buttonStyle(.plain)
+                            }
+                        }
                     }
-                    if let candidate = wishlistItem {
-                        Button { add(candidate); showPicker = false } label: {
-                            VStack(alignment: .leading) { AssetImage(name: candidate.catalogAssetName).frame(height: 155); Text(candidate.label).font(.subheadline.bold()); StatusPill(text: "Considering", color: WearwellTheme.coral) }
-                        }.buttonStyle(.plain)
+                }
+                .padding()
+            }
+            .navigationTitle("Add to outfit")
+            .searchable(text: $pickerSearch, prompt: "Search clothes")
+            .toolbar { Button("Done") { showPicker = false } }
+        }
+    }
+
+    private var filteredGarments: [Garment] {
+        garments.filter { garment in
+            (pickerCategory == nil || garment.category == pickerCategory) &&
+            (pickerSubcategory == nil || garment.subcategory == pickerSubcategory) &&
+            matchesPickerSearch(label: garment.label, color: garment.color, category: garment.category, subcategory: garment.subcategory)
+        }
+    }
+
+    private var showsWishlistCandidate: Bool {
+        guard let candidate = wishlistItem else { return false }
+        return (pickerCategory == nil || candidate.category == pickerCategory) &&
+            (pickerSubcategory == nil || candidate.subcategory == pickerSubcategory) &&
+            matchesPickerSearch(label: candidate.label, color: candidate.color, category: candidate.category, subcategory: candidate.subcategory)
+    }
+
+    private func matchesPickerSearch(label: String, color: String, category: GarmentCategory, subcategory: GarmentSubcategory?) -> Bool {
+        guard !pickerSearch.isEmpty else { return true }
+        return [label, color, category.title, subcategory?.title ?? ""]
+            .joined(separator: " ")
+            .localizedCaseInsensitiveContains(pickerSearch)
+    }
+
+    private var pickerFilters: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    Button("All") { pickerCategory = nil; pickerSubcategory = nil }
+                        .buttonStyle(FilterButtonStyle(selected: pickerCategory == nil))
+                    ForEach(GarmentCategory.allCases) { category in
+                        Button(category.title) { pickerCategory = category; pickerSubcategory = nil }
+                            .buttonStyle(FilterButtonStyle(selected: pickerCategory == category))
                     }
-                }.padding()
-            }.navigationTitle("Add to outfit").toolbar { Button("Done") { showPicker = false } }
+                }
+            }
+            if let pickerCategory, !GarmentSubcategory.options(for: pickerCategory).isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        Button("All types") { pickerSubcategory = nil }
+                            .buttonStyle(FilterButtonStyle(selected: pickerSubcategory == nil))
+                        ForEach(GarmentSubcategory.options(for: pickerCategory)) { subcategory in
+                            Button(subcategory.filterTitle) { pickerSubcategory = subcategory }
+                                .buttonStyle(FilterButtonStyle(selected: pickerSubcategory == subcategory))
+                        }
+                    }
+                }
+            }
         }
     }
 

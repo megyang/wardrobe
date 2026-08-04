@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @EnvironmentObject private var companion: CompanionClient
     @EnvironmentObject private var protection: DataProtectionController
+    @EnvironmentObject private var macBackups: MacBackupController
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var host = UserDefaults.standard.string(forKey: "companionHost") ?? ""
@@ -17,6 +18,7 @@ struct SettingsView: View {
     @State private var importingBackup = false
     @State private var backupWorking = false
     @State private var backupMessage: String?
+    @State private var confirmingRecovery = false
 
     var body: some View {
         Form {
@@ -47,6 +49,30 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Backup and restore") {
+                Toggle("Automatic Mac backups", isOn: Binding(
+                    get: { macBackups.automaticEnabled },
+                    set: { macBackups.automaticEnabled = $0 }
+                ))
+                Button {
+                    Task { await macBackups.backupIfDue(context: context, companion: companion, force: true) }
+                } label: {
+                    Label(macBackups.isBackingUp ? (macBackups.progressText ?? "Backing up…") : "Back up to Mac now", systemImage: "externaldrive.badge.icloud")
+                }.disabled(macBackups.isBackingUp)
+                if let lastBackup = macBackups.lastBackupAt {
+                    LabeledContent("Last Mac backup") { Text(lastBackup, style: .relative) }
+                }
+                if let status = macBackups.remoteStatus {
+                    Text("Mac has \(status.snapshotCount) restore points. Wearwell retains up to \(status.retention.daily) daily and \(status.retention.weekly) weekly snapshots.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let backupError = macBackups.lastError {
+                    Text("Mac backup will retry when connected: \(backupError)").font(.caption).foregroundStyle(.orange)
+                }
+                Button {
+                    confirmingRecovery = true
+                } label: {
+                    Label("Recover saved clothing images", systemImage: "photo.stack")
+                }.disabled(backupWorking)
                 Button {
                     Task { await prepareBackup() }
                 } label: {
@@ -82,6 +108,13 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .toolbar { Button("Done") { dismiss() } }
+        .task { await macBackups.refreshStatus(companion: companion) }
+        .alert("Recover saved clothing images?", isPresented: $confirmingRecovery) {
+            Button("Cancel", role: .cancel) {}
+            Button("Recover") { recoverOrphanedImages() }
+        } message: {
+            Text("Wearwell will recreate missing wardrobe entries from catalog images still stored on this iPhone. Existing wardrobe items and images will not be changed.")
+        }
         .fileExporter(
             isPresented: $exportingBackup,
             document: backupDocument,
@@ -107,6 +140,16 @@ struct SettingsView: View {
         pairing = true; error = nil; companion.configure(host: host, port: Int(port) ?? 8791)
         do { try await companion.pair(code: code); code = "" } catch { self.error = error.localizedDescription }
         pairing = false
+    }
+
+    @MainActor
+    private func recoverOrphanedImages() {
+        do {
+            let count = try protection.recoverOrphanedCatalogItems()
+            backupMessage = count == 0 ? "No orphaned catalog images were found." : "Recovered \(count) wardrobe items. Review their names and categories when convenient."
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     @MainActor

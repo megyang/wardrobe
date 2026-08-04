@@ -188,6 +188,15 @@ final class WearwellTests: XCTestCase {
         XCTAssertNil(ImportService.secureURL(from: "ftp://shop.example/item"))
     }
 
+    func testCompanionEndpointRejectsInvalidDiscoveryNamesWithoutCrashing() throws {
+        XCTAssertThrowsError(try CompanionEndpoint.url(host: "Megdy’s Mac", port: 8791))
+        XCTAssertThrowsError(try CompanionEndpoint.url(host: "mac.local", port: 0))
+        XCTAssertEqual(
+            try CompanionEndpoint.url(host: " mac.local\n", port: 8791).absoluteString,
+            "https://mac.local:8791/"
+        )
+    }
+
     func testOpenGraphImageIsUpgradedToHTTPS() {
         let html = #"<meta property="og:image" content="http://cdn.example/coat.jpg">"#
         XCTAssertEqual(ImportService.openGraphImage(in: html, base: URL(string: "https://shop.example/item")!)?.absoluteString, "https://cdn.example/coat.jpg")
@@ -227,6 +236,99 @@ final class WearwellTests: XCTestCase {
         XCTAssertLessThan(cutout.size.width, source.size.width)
         XCTAssertLessThan(cutout.size.height, source.size.height)
         XCTAssertEqual(cutout.size, CGSize(width: 54, height: 64))
+    }
+
+    func testGreenBackdropRefinerClearsEnclosedLaceHole() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40), format: format).image { context in
+            UIColor(red: 0.1, green: 0.9, blue: 0.2, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 8, y: 8, width: 24, height: 24))
+            UIColor(red: 0.1, green: 0.9, blue: 0.2, alpha: 1).setFill()
+            context.fill(CGRect(x: 17, y: 17, width: 6, height: 6))
+        }
+
+        let refined = GreenBackdropRefiner.refine(source: source, masked: source)
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 20, y: 20)), 8)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 12, y: 12)), 247)
+    }
+
+    func testExistingTransparentShirtIsNotRecroppedToItsPrintedGraphic() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let shirt = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100), format: format).image { context in
+            context.cgContext.clear(CGRect(x: 0, y: 0, width: 100, height: 100))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 20, y: 10, width: 60, height: 80))
+            UIColor.red.setFill()
+            context.cgContext.fillEllipse(in: CGRect(x: 44, y: 40, width: 12, height: 14))
+        }
+
+        let prepared = AssetStore.preparedCollageImage(from: shirt)
+
+        XCTAssertTrue(ImageTransparencyDetector.hasMeaningfulTransparency(shirt))
+        XCTAssertEqual(prepared.size, CGSize(width: 64, height: 84))
+    }
+
+    func testTinyPrintedGraphicIsRejectedAsAForegroundCutout() {
+        XCTAssertFalse(ForegroundCropValidator.isPlausible(
+            CGSize(width: 90, height: 85),
+            relativeTo: CGSize(width: 1000, height: 1250)
+        ))
+        XCTAssertTrue(ForegroundCropValidator.isPlausible(
+            CGSize(width: 700, height: 900),
+            relativeTo: CGSize(width: 1000, height: 1250)
+        ))
+    }
+
+    func testEmbeddedCheckerboardIsRemovedWithoutLosingPaleShirt() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 120), format: format).image { context in
+            for y in stride(from: 0, to: 120, by: 8) {
+                for x in stride(from: 0, to: 100, by: 8) {
+                    ((x / 8 + y / 8).isMultiple(of: 2) ? UIColor.white : UIColor(white: 0.92, alpha: 1)).setFill()
+                    context.fill(CGRect(x: x, y: y, width: 8, height: 8))
+                }
+            }
+            UIColor(red: 0.82, green: 0.95, blue: 0.95, alpha: 1).setFill()
+            context.fill(CGRect(x: 20, y: 15, width: 60, height: 90))
+            UIColor.red.setFill()
+            context.cgContext.fillEllipse(in: CGRect(x: 43, y: 48, width: 14, height: 14))
+        }
+
+        guard let refined = EmbeddedCheckerboardRefiner.refine(source) else {
+            return XCTFail("Expected the embedded checkerboard to be detected")
+        }
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 4, y: 4)), 8)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 25, y: 25)), 247)
+        XCTAssertGreaterThan(AlphaBoundsCropper.crop(refined).size.width, 50)
+    }
+
+    private func alpha(in image: UIImage, at point: CGPoint) -> UInt8 {
+        guard let cgImage = image.cgImage else { return 0 }
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 0 }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let x = max(0, min(width - 1, Int(point.x)))
+        let y = max(0, min(height - 1, Int(point.y)))
+        return pixels[y * bytesPerRow + x * 4 + 3]
     }
 
     @MainActor

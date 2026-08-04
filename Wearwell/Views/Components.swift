@@ -1,6 +1,32 @@
 import SwiftUI
 import UIKit
 
+private struct SendableImage: @unchecked Sendable {
+    let value: UIImage?
+}
+
+enum KeyboardController {
+    @MainActor
+    static func dismiss() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+
+private struct KeyboardDismissToolbar: ViewModifier {
+    func body(content: Content) -> some View {
+        content.toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { KeyboardController.dismiss() }
+            }
+        }
+    }
+}
+
+extension View {
+    func keyboardDismissToolbar() -> some View { modifier(KeyboardDismissToolbar()) }
+}
+
 struct EditorialHeader: View {
     let eyebrow: String
     let title: String
@@ -34,20 +60,40 @@ struct AssetImage: View {
 struct CollageAssetImage: View {
     let name: String
     @State private var cutout: UIImage?
+    @State private var loadedName: String?
+
+    init(name: String) {
+        self.name = name
+        let cached = AssetStore.cachedCollageImage(named: name)
+        _cutout = State(initialValue: cached)
+        _loadedName = State(initialValue: cached == nil ? nil : name)
+    }
+
     var body: some View {
         Group {
-            if let cutout {
+            if loadedName == name, let cutout {
                 Image(uiImage: cutout).resizable().scaledToFit()
             } else {
-                ProgressView().controlSize(.small)
+                // Never flash the unprocessed asset: generated backdrop colors
+                // and checker grids are especially noticeable during scrolling.
+                Color.clear
             }
         }
+        .animation(.easeOut(duration: 0.18), value: loadedName)
         .task(id: name) {
-            cutout = nil
-            let data = await Task.detached(priority: .userInitiated) {
-                AssetStore.collageImage(named: name)?.pngData()
+            guard loadedName != name else { return }
+            if let cached = AssetStore.cachedCollageImage(named: name) {
+                cutout = cached
+                loadedName = name
+                return
+            }
+            let result = await Task.detached(priority: .userInitiated) {
+                SendableImage(value: AssetStore.collageImage(named: name))
             }.value
-            if !Task.isCancelled { cutout = data.flatMap(UIImage.init(data:)) }
+            if !Task.isCancelled {
+                cutout = result.value
+                loadedName = name
+            }
         }
     }
 }
@@ -68,7 +114,7 @@ struct CatalogDataImage: View {
             cutout = nil
             let previewData = await Task.detached(priority: .userInitiated) {
                 guard let source = UIImage(data: data) else { return nil as Data? }
-                return (ForegroundSubjectExtractor.extract(from: source) ?? source).pngData()
+                return AssetStore.preparedCollageImage(from: source).pngData()
             }.value
             if !Task.isCancelled { cutout = previewData.flatMap(UIImage.init(data:)) }
         }

@@ -55,6 +55,38 @@ final class DataProtectionController: ObservableObject {
         storageState = .available
     }
 
+    /// Rebuilds missing wardrobe rows from catalog images that are still safely
+    /// stored in SwiftData. It never removes or replaces an existing garment.
+    func recoverOrphanedCatalogItems() throws -> Int {
+        let context = ModelContext(modelContainer)
+        let garments = try context.fetch(FetchDescriptor<Garment>())
+        let referencedNames = Set(garments.flatMap { [$0.sourceAssetName, $0.catalogAssetName] })
+        let blobs = try context.fetch(FetchDescriptor<AssetBlob>(sortBy: [SortDescriptor(\.createdAt)]))
+        let catalogBlobs = Dictionary(grouping: blobs, by: \.name)
+            .compactMap { name, values -> AssetBlob? in
+                guard name.lowercased().hasSuffix(".png"), !referencedNames.contains(name) else { return nil }
+                return values.max { $0.updatedAt < $1.updatedAt }
+            }
+            .sorted { $0.name < $1.name }
+
+        for (index, blob) in catalogBlobs.enumerated() {
+            context.insert(Garment(
+                label: "Recovered item \(index + 1)",
+                category: .tops,
+                color: "Needs review",
+                details: "Recovered from the original catalog image after a storage configuration change.",
+                confidence: 0,
+                fingerprint: "recovered:\(blob.name)",
+                sourceAssetName: blob.name,
+                catalogAssetName: blob.name,
+                tags: "recovered",
+                modelVersion: "local-recovery"
+            ))
+        }
+        if !catalogBlobs.isEmpty { try context.save() }
+        return catalogBlobs.count
+    }
+
     private func migrateLegacyAssets() async {
         let names = await AssetStore.shared.legacyAssetNames()
         migrationTotal = names.count

@@ -99,6 +99,7 @@ final class CompanionClient: ObservableObject {
     private var port: Int { defaults.integer(forKey: "companionPort").nonzero ?? 8791 }
     private var token: String? { CompanionKeychain.string(for: "token") }
     private var fingerprint: String? { CompanionKeychain.string(for: "certificateFingerprint") }
+    var isPaired: Bool { token != nil && fingerprint != nil }
 
     init() { startDiscovery() }
 
@@ -119,13 +120,14 @@ final class CompanionClient: ObservableObject {
     }
 
     func configure(host: String, port: Int = 8791) {
-        defaults.set(host, forKey: "companionHost"); defaults.set(port, forKey: "companionPort")
+        defaults.set(host.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "companionHost")
+        defaults.set(port, forKey: "companionPort")
     }
 
     func pair(code: String, deviceName: String = UIDevice.current.name) async throws {
         let delegate = TrustDelegate(expectedFingerprint: nil, allowFirstTrust: true)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        var request = URLRequest(url: baseURL.appending(path: "v1/pair"))
+        var request = URLRequest(url: try CompanionEndpoint.url(host: host, port: port).appending(path: "v1/pair"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONEncoder().encode(["code": code, "deviceName": deviceName])
         let (data, response) = try await session.data(for: request)
@@ -276,12 +278,50 @@ final class CompanionClient: ObservableObject {
         return image
     }
 
-    private var baseURL: URL { URL(string: "https://\(host):\(port)/")! }
+    func submitCatalogEdit(imageData: Data, instruction: String) async throws -> CatalogEditJobDTO {
+        status = .busy
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue catalog edit")
+        defer {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            status = .available
+        }
+        let payload = CatalogEditRequest(imageBase64: imageData.base64EncodedString(), instruction: instruction)
+        let data = try await send(path: "v1/jobs/catalog/edit", body: payload)
+        return try JSONDecoder().decode(CatalogEditJobDTO.self, from: data)
+    }
+
+    func catalogEditJob(id: String) async throws -> CatalogEditJobDTO {
+        let data = try await send(path: "v1/jobs/\(id)", method: "GET", body: Optional<String>.none)
+        return try JSONDecoder().decode(CatalogEditJobDTO.self, from: data)
+    }
+
+    func prepareMacBackup(manifestData: Data) async throws -> [String] {
+        let request = BackupManifestRequest(manifestBase64: manifestData.base64EncodedString())
+        let data = try await send(path: "v1/backups/prepare", body: request)
+        return try JSONDecoder().decode(BackupPrepareResponse.self, from: data).missingHashes
+    }
+
+    func uploadMacBackupAsset(_ data: Data, asset: WearwellBackupManifest.AssetRecord) async throws {
+        let request = BackupAssetRequest(sha256: asset.sha256, byteCount: asset.byteCount, dataBase64: data.base64EncodedString())
+        _ = try await send(path: "v1/backups/asset", body: request)
+    }
+
+    func commitMacBackup(manifestData: Data) async throws -> MacBackupStatus {
+        let request = BackupManifestRequest(manifestBase64: manifestData.base64EncodedString())
+        let data = try await send(path: "v1/backups/commit", body: request)
+        return try JSONDecoder().decode(MacBackupStatus.self, from: data)
+    }
+
+    func macBackupStatus() async throws -> MacBackupStatus {
+        let data = try await send(path: "v1/backups/status", method: "GET", body: Optional<String>.none)
+        return try JSONDecoder().decode(MacBackupStatus.self, from: data)
+    }
 
     private func send<T: Encodable>(path: String, method: String = "POST", body: T?) async throws -> Data {
+        guard isPaired else { throw ClientError.notPaired }
         let delegate = TrustDelegate(expectedFingerprint: fingerprint)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var request = URLRequest(url: try CompanionEndpoint.url(host: host, port: port).appending(path: path))
         request.httpMethod = method
         request.timeoutInterval = 300
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization") }
@@ -303,8 +343,24 @@ final class CompanionClient: ObservableObject {
 }
 
 private extension Int { var nonzero: Int? { self == 0 ? nil : self } }
-enum ClientError: LocalizedError { case invalidResponse, expired, jobNotFound, server(String)
-    var errorDescription: String? { switch self { case .invalidResponse: "Invalid companion response"; case .expired: "Pairing expired"; case .jobNotFound: "Job not found or expired"; case .server(let value): value } }
+enum ClientError: LocalizedError { case invalidResponse, invalidConfiguration, notPaired, expired, jobNotFound, server(String)
+    var errorDescription: String? { switch self { case .invalidResponse: "Invalid companion response"; case .invalidConfiguration: "Enter a valid Mac hostname and port"; case .notPaired: "Pair with your Mac companion first"; case .expired: "Pairing expired"; case .jobNotFound: "Job not found or expired"; case .server(let value): value } }
+}
+
+enum CompanionEndpoint {
+    static func url(host: String, port: Int) throws -> URL {
+        let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedHost.isEmpty, (1...65_535).contains(port) else {
+            throw ClientError.invalidConfiguration
+        }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = normalizedHost
+        components.port = port
+        components.path = "/"
+        guard let url = components.url else { throw ClientError.invalidConfiguration }
+        return url
+    }
 }
 
 private struct PairResponse: Codable { let token: String; let certificateFingerprint: String }
@@ -312,6 +368,18 @@ private struct HealthResponse: Codable { let status: String; let auth: String; l
 private struct ErrorResponse: Codable { let error: String }
 private struct AnalyzeRequest: Codable { let imageBase64: String; let sourceURL: String? }
 private struct InspirationRequest: Codable { let imageBase64: String }
+private struct BackupManifestRequest: Codable { let manifestBase64: String }
+private struct BackupPrepareResponse: Codable { let missingHashes: [String] }
+private struct BackupAssetRequest: Codable { let sha256: String; let byteCount: Int; let dataBase64: String }
+struct MacBackupStatus: Codable, Equatable {
+    let latestAt: String?
+    let snapshotCount: Int
+    let dailySnapshots: Int
+    let weeklySnapshots: Int
+    let retention: Retention
+
+    struct Retention: Codable, Equatable { let daily: Int; let weekly: Int }
+}
 struct AnalyzeResponse: Codable { let items: [GarmentAnalysisDTO] }
 struct AnalysisJobDTO: Codable {
     let id: String
@@ -352,6 +420,19 @@ struct AssessmentJobDTO: Codable {
     let queuePosition: Int?
     let estimatedSecondsRemaining: Int?
     let result: PurchaseAssessmentDTO?
+    let error: String?
+}
+
+struct CatalogEditJobDTO: Codable {
+    let id: String
+    let kind: String
+    let state: String
+    let createdAt: String
+    let updatedAt: String
+    let stage: String?
+    let queuePosition: Int?
+    let estimatedSecondsRemaining: Int?
+    let result: RenderResponse?
     let error: String?
 }
 private struct GarmentSummary: Codable {
@@ -408,5 +489,5 @@ private struct AssessmentRequest: Codable {
     let inspirationExamples: [InspirationExample]
 }
 private struct RenderRequest: Codable { let mode, referenceBase64: String; let garmentImagesBase64: [String] }
-private struct RenderResponse: Codable { let imageBase64: String }
+struct RenderResponse: Codable { let imageBase64: String }
 private struct CatalogEditRequest: Codable { let imageBase64, instruction: String }

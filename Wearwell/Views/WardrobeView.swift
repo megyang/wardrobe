@@ -56,7 +56,7 @@ struct WardrobeView: View {
             if let category, !GarmentSubcategory.options(for: category).isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        Button("All (category.title.lowercased())") { subcategory = nil }.buttonStyle(FilterButtonStyle(selected: subcategory == nil))
+                        Button("All") { subcategory = nil }.buttonStyle(FilterButtonStyle(selected: subcategory == nil))
                         ForEach(GarmentSubcategory.options(for: category)) { item in
                             Button(item.filterTitle) { subcategory = item }.buttonStyle(FilterButtonStyle(selected: subcategory == item))
                         }

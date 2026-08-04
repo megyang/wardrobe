@@ -15,6 +15,7 @@ import { withAbortTimeout } from "./timeout.mjs";
 import { PriorityQueue } from "./priority-queue.mjs";
 import { assessmentSchema, outfitSchema } from "./response-schemas.mjs";
 import { inspirationPrompt, inspirationSchema, STYLE_ANALYSIS_VERSION } from "./inspiration.mjs";
+import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -28,6 +29,7 @@ const CERT_PATH = path.join(DATA, "companion-cert.pem");
 const KEY_PATH = path.join(DATA, "companion-key.pem");
 const TOKENS_PATH = path.join(DATA, "paired-devices.json");
 const JOBS = path.join(DATA, "jobs");
+const BACKUPS = path.join(DATA, "backups");
 const PRIMARY_CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const WORKER_ROOT = path.join(DATA, "codex-workers");
 const WORKER_COUNT = 2;
@@ -41,7 +43,9 @@ const INITIAL_ANALYSIS_ESTIMATE_SECONDS = 180;
 const CUTOUT_ESTIMATE_SECONDS = 75;
 const STYLE_ESTIMATE_SECONDS = 45;
 const ASSESSMENT_ESTIMATE_SECONDS = 60;
+const CATALOG_EDIT_ESTIMATE_SECONDS = 90;
 const OVERDUE_SWEEP_MS = 15 * 1000;
+const backupStore = new BackupStore(BACKUPS);
 
 const inventorySchema = {
   type: "object", additionalProperties: false, required: ["items"], properties: {
@@ -88,6 +92,11 @@ async function authorizationToken(req) {
 }
 
 function ownerHash(token) { return crypto.createHash("sha256").update(token).digest("hex"); }
+function decodeBackupManifest(body) {
+  const bytes = Buffer.from(String(body.manifestBase64 || ""), "base64");
+  if (!bytes.length || bytes.length > 5 * 1024 * 1024) throw new Error("Backup manifest is missing or too large.");
+  return validateBackupManifest(JSON.parse(bytes.toString("utf8")));
+}
 function jobPath(id) { return path.join(JOBS, `${id}.json`); }
 async function writeJob(job) {
   await fs.mkdir(JOBS, { recursive: true });
@@ -103,7 +112,7 @@ async function deleteAnalysisJob(id) {
 }
 function publicJob(job) {
   const queuePosition = job.state === "queued" ? analysisJobQueue.position(job.id) : null;
-  const initialEstimate = job.kind === "style" ? STYLE_ESTIMATE_SECONDS : job.kind === "assess" ? ASSESSMENT_ESTIMATE_SECONDS : INITIAL_ANALYSIS_ESTIMATE_SECONDS;
+  const initialEstimate = job.kind === "style" ? STYLE_ESTIMATE_SECONDS : job.kind === "assess" ? ASSESSMENT_ESTIMATE_SECONDS : job.kind === "catalogEdit" ? CATALOG_EDIT_ESTIMATE_SECONDS : INITIAL_ANALYSIS_ESTIMATE_SECONDS;
   const estimatedSecondsRemaining = job.estimatedSecondsRemaining ??
     (job.state === "queued" ? Math.ceil(Math.max(1, queuePosition || 1) / WORKER_COUNT) * initialEstimate : null);
   return {
@@ -124,8 +133,8 @@ async function processDurableJob(id, workerIndex) {
   const timeout = setTimeout(() => controller.abort(new Error("Background processing exceeded one hour.")), PROCESSING_TIMEOUT_MS);
   try {
     if (!["queued", "processing"].includes(job.state)) return;
-    const stage = job.kind === "style" ? "Creating outfits" : job.kind === "assess" ? "Testing purchase" : "Analyzing photo";
-    const estimate = job.kind === "style" ? STYLE_ESTIMATE_SECONDS : job.kind === "assess" ? ASSESSMENT_ESTIMATE_SECONDS : INITIAL_ANALYSIS_ESTIMATE_SECONDS;
+    const stage = job.kind === "style" ? "Creating outfits" : job.kind === "assess" ? "Testing purchase" : job.kind === "catalogEdit" ? "Applying your edit" : "Analyzing photo";
+    const estimate = job.kind === "style" ? STYLE_ESTIMATE_SECONDS : job.kind === "assess" ? ASSESSMENT_ESTIMATE_SECONDS : job.kind === "catalogEdit" ? CATALOG_EDIT_ESTIMATE_SECONDS : INITIAL_ANALYSIS_ESTIMATE_SECONDS;
     job.state = "processing"; job.stage = stage; job.estimatedSecondsRemaining = estimate;
     job.processingStartedAt = new Date().toISOString(); job.updatedAt = job.processingStartedAt; await writeJob(job);
     try {
@@ -133,6 +142,8 @@ async function processDurableJob(id, workerIndex) {
         job.result = await style(job.request, controller.signal, workerIndex);
       } else if (job.kind === "assess") {
         job.result = await assess(job.request, controller.signal, workerIndex);
+      } else if (job.kind === "catalogEdit") {
+        job.result = await editCatalog(job.request, controller.signal, workerIndex);
       } else {
         job.result = await analyze(job.request, async progress => {
           if (controller.signal.aborted) throw controller.signal.reason;
@@ -371,12 +382,12 @@ async function render(body) {
   } finally { for (const temp of temps) await fs.rm(temp.folder, { recursive: true, force: true }); }
 }
 
-async function editCatalog(body) {
+async function editCatalog(body, signal = null, workerIndex = null) {
   const instruction = String(body.instruction || "").trim();
   if (!instruction || instruction.length > 500) throw new Error("Describe one small edit in 500 characters or fewer.");
   const temp = await temporaryImage(body.imageBase64, "catalog-edit");
   try {
-    const bytes = await generatedImage(catalogEditPrompt(instruction), [temp.file]);
+    const bytes = await generatedImage(catalogEditPrompt(instruction), [temp.file], signal, workerIndex);
     return { imageBase64: bytes.toString("base64") };
   } finally { await fs.rm(temp.folder, { recursive: true, force: true }); }
 }
@@ -396,6 +407,7 @@ const server = https.createServer(tls, async (req, res) => {
     const token = await authorizationToken(req);
     if (!token) return send(res, 401, { error: "Pairing is missing or expired." });
     if (req.method === "GET" && url.pathname === "/v1/health") return send(res, 200, { status: "ok", auth: "local Codex / ChatGPT", model: MODEL, serviceTier: SERVICE_TIER, analysisWorkers: WORKER_COUNT });
+    if (req.method === "GET" && url.pathname === "/v1/backups/status") return send(res, 200, await backupStore.status(ownerHash(token)));
     const jobMatch = url.pathname.match(/^\/v1\/jobs\/([0-9a-f-]{36})$/i);
     if (jobMatch && req.method === "GET") {
       let job; try { job = await readJob(jobMatch[1]); } catch { return send(res, 404, { error: "Job not found or expired." }); }
@@ -413,12 +425,25 @@ const server = https.createServer(tls, async (req, res) => {
     if (url.pathname === "/v1/jobs/analyze") return send(res, 202, await createDurableJob("analyze", body, token));
     if (url.pathname === "/v1/jobs/style") return send(res, 202, await createDurableJob("style", body, token));
     if (url.pathname === "/v1/jobs/assess") return send(res, 202, await createDurableJob("assess", body, token));
+    if (url.pathname === "/v1/jobs/catalog/edit") return send(res, 202, await createDurableJob("catalogEdit", body, token));
     if (url.pathname === "/v1/analyze") return send(res, 200, await analyze(body));
     if (url.pathname === "/v1/inspiration/analyze") return send(res, 200, await analyzeInspiration(body));
     if (url.pathname === "/v1/style") return send(res, 200, await style(body));
     if (url.pathname === "/v1/assess") return send(res, 200, await assess(body));
     if (url.pathname === "/v1/render") return send(res, 200, await render(body));
     if (url.pathname === "/v1/catalog/edit") return send(res, 200, await editCatalog(body));
+    if (url.pathname === "/v1/backups/prepare") {
+      const manifest = decodeBackupManifest(body);
+      return send(res, 200, { missingHashes: await backupStore.prepare(ownerHash(token), manifest) });
+    }
+    if (url.pathname === "/v1/backups/asset") {
+      const bytes = Buffer.from(String(body.dataBase64 || ""), "base64");
+      await backupStore.putAsset(ownerHash(token), token, String(body.sha256 || ""), Number(body.byteCount), bytes);
+      return send(res, 201, { stored: true });
+    }
+    if (url.pathname === "/v1/backups/commit") {
+      return send(res, 201, await backupStore.commit(ownerHash(token), token, decodeBackupManifest(body)));
+    }
     return send(res, 404, { error: "Not found." });
   } catch (error) { send(res, 500, { error: error?.message || String(error) }); }
 });

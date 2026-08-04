@@ -5,6 +5,7 @@ struct RootTabView: View {
     private static let importTimeout: TimeInterval = 24 * 60 * 60
 
     @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var macBackups: MacBackupController
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
     @Query private var importDrafts: [ImportDraft]
@@ -27,8 +28,21 @@ struct RootTabView: View {
         .background(WearwellTheme.cream)
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() } }
         .task { await expireOverdueImports() }
+        .task {
+            while !Task.isCancelled {
+                await macBackups.backupIfDue(context: context, companion: companion)
+                try? await Task.sleep(for: .seconds(60 * 60))
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await expireOverdueImports() } }
+            if phase == .active {
+                Task {
+                    await expireOverdueImports()
+                    await macBackups.backupIfDue(context: context, companion: companion)
+                }
+            } else if phase == .background {
+                Task { await macBackups.backupIfDue(context: context, companion: companion) }
+            }
         }
     }
 

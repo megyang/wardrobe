@@ -14,6 +14,7 @@ struct CatalogImageEditor: View {
     @State private var brushFraction: Double = 0.07
     @State private var instruction = ""
     @State private var applyingEdit = false
+    @State private var editJob: CatalogEditJobDTO?
     @State private var error: String?
 
     init(imageData: Binding<Data?>, sourceData: Data) {
@@ -54,12 +55,28 @@ struct CatalogImageEditor: View {
                         TextField("Example: remove the loose thread at the hem", text: $instruction, axis: .vertical)
                             .lineLimit(2...4).textFieldStyle(.roundedBorder)
                         Button {
+                            KeyboardController.dismiss()
                             Task { await applyTextEdit() }
                         } label: {
                             HStack { Spacer(); if applyingEdit { ProgressView() } else { Label("Apply text edit", systemImage: "sparkles") }; Spacer() }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || applyingEdit || companion.status != .available)
+                        if let job = editJob, applyingEdit {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(job.stage ?? "Sending edit…").font(.caption.weight(.semibold))
+                                if job.state == "queued", let position = job.queuePosition {
+                                    Text(position == 1 ? "Next in line" : "#\(position) in line").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                if let estimate = job.estimatedSecondsRemaining {
+                                    Text("Estimated time remaining: \(duration(estimate))").font(.caption2).foregroundStyle(.secondary)
+                                } else {
+                                    Text("Estimating time remaining…").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Text("You can close this editor or lock your phone; your Mac will keep working.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                         if companion.status != .available {
                             Text("Pair with the Mac companion to use text edits. The eraser works offline.").font(.caption).foregroundStyle(.secondary)
                         }
@@ -69,12 +86,14 @@ struct CatalogImageEditor: View {
                     .padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
                 }.padding()
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(WearwellTheme.cream)
             .navigationTitle("Edit cutout").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { saveAndDismiss() } }
             }
+            .keyboardDismissToolbar()
         }
     }
 
@@ -125,14 +144,39 @@ struct CatalogImageEditor: View {
         applyingEdit = true; error = nil
         defer { applyingEdit = false }
         do {
-            let edited = try await companion.editCatalog(imageData: current, instruction: instruction.trimmingCharacters(in: .whitespacesAndNewlines))
+            let requestedEdit = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+            let edited: Data
+            do {
+                var job = try await companion.submitCatalogEdit(imageData: current, instruction: requestedEdit)
+                editJob = job
+                while ["queued", "processing"].contains(job.state) {
+                    try await Task.sleep(for: .seconds(2))
+                    job = try await companion.catalogEditJob(id: job.id)
+                    editJob = job
+                }
+                guard job.state == "complete", let encoded = job.result?.imageBase64, let result = Data(base64Encoded: encoded) else {
+                    throw CatalogEditError.failed(job.error ?? "The edit could not be completed.")
+                }
+                edited = result
+            } catch ClientError.jobNotFound {
+                // Older companion builds expose the direct edit endpoint but not
+                // durable catalog-edit jobs. Keep edits working until it restarts.
+                editJob = nil
+                edited = try await companion.editCatalog(imageData: current, instruction: requestedEdit)
+            }
             let cutout = await Task.detached(priority: .userInitiated) {
                 guard let image = UIImage(data: edited) else { return edited }
-                return (ForegroundSubjectExtractor.extract(from: image) ?? image).pngData() ?? edited
+                return AssetStore.preparedCollageImage(from: image).pngData() ?? edited
             }.value
             workingData = cutout
+            imageData = cutout
             strokes = []; activeStroke = []; instruction = ""
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func duration(_ seconds: Int) -> String {
+        if seconds < 45 { return seconds <= 5 ? "a few seconds" : "less than a minute" }
+        return "about \(Int(ceil(Double(seconds) / 60))) min"
     }
 
     private func saveAndDismiss() {
@@ -152,6 +196,11 @@ struct CatalogImageEditor: View {
     }
     private func normalize(_ point: CGPoint, in rect: CGRect) -> CGPoint { CGPoint(x: (point.x - rect.minX) / rect.width, y: (point.y - rect.minY) / rect.height) }
     private func denormalize(_ point: CGPoint, in rect: CGRect) -> CGPoint { CGPoint(x: rect.minX + point.x * rect.width, y: rect.minY + point.y * rect.height) }
+}
+
+private enum CatalogEditError: LocalizedError {
+    case failed(String)
+    var errorDescription: String? { if case .failed(let message) = self { message } else { nil } }
 }
 
 enum ManualImageEraser {

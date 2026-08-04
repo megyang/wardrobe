@@ -41,19 +41,19 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		AA0000000000000000000065 /* Exceptions for "Wearwell" folder in "Wearwell" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = AA0000000000000000000040 /* Wearwell */;
-		};
 		AA0000000000000000000064 /* Exceptions for "ShareExtension" folder in "WearwellShare" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
 			target = AA0000000000000000000041 /* WearwellShare */;
+		};
+		AA0000000000000000000065 /* Exceptions for "Wearwell" folder in "Wearwell" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA0000000000000000000040 /* Wearwell */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 

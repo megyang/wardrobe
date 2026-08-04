@@ -66,6 +66,11 @@ struct WearwellBackupArchive {
     var assets: [String: Data]
 }
 
+struct MacBackupPlan {
+    let manifest: WearwellBackupManifest
+    let manifestData: Data
+}
+
 struct WearwellBackupDocument: FileDocument {
     static let contentType = UTType(exportedAs: "com.wearwell.backup", conformingTo: .package)
     static var readableContentTypes: [UTType] { [contentType] }
@@ -148,6 +153,17 @@ struct BackupRestoreResult: Equatable {
 @MainActor
 enum BackupService {
     static func makeDocument(context: ModelContext) async throws -> WearwellBackupDocument {
+        let plan = try await makeMacBackupPlan(context: context)
+        var assetData: [String: Data] = [:]
+        for asset in plan.manifest.assets {
+            assetData[asset.name] = try await data(for: asset, context: context)
+        }
+        return WearwellBackupDocument(archive: .init(manifest: plan.manifest, assets: assetData))
+    }
+
+    /// Builds the small snapshot manifest without retaining every wardrobe image
+    /// in memory. The companion requests only hashes it has not stored before.
+    static func makeMacBackupPlan(context: ModelContext) async throws -> MacBackupPlan {
         let garments = try context.fetch(FetchDescriptor<Garment>())
         let wishlist = try context.fetch(FetchDescriptor<WishlistItem>())
         let outfits = try context.fetch(FetchDescriptor<Outfit>())
@@ -157,8 +173,11 @@ enum BackupService {
         let profiles = try context.fetch(FetchDescriptor<StyleProfile>())
         let blobs = try context.fetch(FetchDescriptor<AssetBlob>())
 
-        var assetData: [String: Data] = [:]
-        for blob in blobs where isSafeAssetName(blob.name) { assetData[blob.name] = blob.data }
+        var assetRecords: [String: WearwellBackupManifest.AssetRecord] = [:]
+        for blob in blobs.sorted(by: { $0.updatedAt < $1.updatedAt }) where isSafeAssetName(blob.name) {
+            let value = blob.data
+            assetRecords[blob.name] = .init(name: blob.name, byteCount: value.count, sha256: sha256(value))
+        }
         var referenced = Set<String>()
         for item in garments { referenced.insert(item.sourceAssetName); referenced.insert(item.catalogAssetName) }
         for item in wishlist { referenced.insert(item.sourceAssetName); referenced.insert(item.catalogAssetName) }
@@ -167,9 +186,9 @@ enum BackupService {
         for item in references { referenced.insert(item.assetName) }
         for item in inspiration { referenced.insert(item.assetName) }
         referenced.remove("")
-        for name in referenced where assetData[name] == nil {
+        for name in referenced where assetRecords[name] == nil {
             guard let value = try? await AssetStore.shared.data(named: name) else { throw BackupError.missingAsset(name) }
-            assetData[name] = value
+            assetRecords[name] = .init(name: name, byteCount: value.count, sha256: sha256(value))
         }
 
         let manifest = WearwellBackupManifest(
@@ -182,9 +201,22 @@ enum BackupService {
             referencePhotos: references.map { .init(id: $0.id, label: $0.label, assetName: $0.assetName, isDefault: $0.isDefault, createdAt: $0.createdAt) },
             inspirationLooks: inspiration.map { .init(id: $0.id, assetName: $0.assetName, sourceURL: $0.sourceURL, state: $0.state, analysisJSON: $0.analysisJSON, errorMessage: $0.errorMessage, isFavorite: $0.isFavorite, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
             styleProfiles: profiles.map { .init(id: $0.id, signature: $0.signature, revision: $0.revision, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
-            assets: assetData.sorted { $0.key < $1.key }.map { .init(name: $0.key, byteCount: $0.value.count, sha256: sha256($0.value)) }
+            assets: assetRecords.values.sorted { $0.name < $1.name }
         )
-        return WearwellBackupDocument(archive: .init(manifest: manifest, assets: assetData))
+        let encoder = JSONEncoder.wearwell
+        encoder.outputFormatting = [.sortedKeys]
+        return MacBackupPlan(manifest: manifest, manifestData: try encoder.encode(manifest))
+    }
+
+    static func data(for asset: WearwellBackupManifest.AssetRecord, context: ModelContext) async throws -> Data {
+        if let value = try? await AssetStore.shared.data(named: asset.name),
+           value.count == asset.byteCount, sha256(value) == asset.sha256 { return value }
+        let name = asset.name
+        let descriptor = FetchDescriptor<AssetBlob>(predicate: #Predicate { $0.name == name }, sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        guard let value = try context.fetch(descriptor).first?.data,
+              value.count == asset.byteCount, sha256(value) == asset.sha256
+        else { throw BackupError.missingAsset(asset.name) }
+        return value
     }
 
     static func restore(_ document: WearwellBackupDocument, context: ModelContext) async throws -> BackupRestoreResult {

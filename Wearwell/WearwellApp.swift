@@ -28,6 +28,7 @@ struct WearwellApp: App {
 
     @StateObject private var companion = CompanionClient()
     @StateObject private var protection: DataProtectionController
+    @StateObject private var macBackups = MacBackupController()
 
     init() {
         let value = container
@@ -39,6 +40,7 @@ struct WearwellApp: App {
             RootTabView()
                 .environmentObject(companion)
                 .environmentObject(protection)
+                .environmentObject(macBackups)
                 .tint(WearwellTheme.sage)
                 .overlay(alignment: .topLeading) { AssetCacheHydrator() }
                 .task {
