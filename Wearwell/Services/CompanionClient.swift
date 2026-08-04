@@ -464,6 +464,7 @@ private struct InspirationExample: Codable {
     let id: UUID
     let summary: String
     let aesthetics, palette, silhouettes, layering, details, occasions: [String]
+    let outfitFormula, proportions, focalPoints, stylingRules: [String]
     let vector: StyleVectorDTO
 
     init?(_ look: InspirationLook) {
@@ -471,6 +472,8 @@ private struct InspirationExample: Codable {
         id = look.id; summary = analysis.summary; aesthetics = analysis.aesthetics; palette = analysis.palette
         silhouettes = analysis.silhouettes; layering = analysis.layering; details = analysis.details
         occasions = analysis.occasions; vector = analysis.vector
+        outfitFormula = analysis.outfitFormula ?? []; proportions = analysis.proportions ?? []
+        focalPoints = analysis.focalPoints ?? []; stylingRules = analysis.stylingRules ?? []
     }
 }
 private struct StyleRequest: Codable {

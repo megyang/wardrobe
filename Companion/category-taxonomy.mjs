@@ -1,6 +1,6 @@
 export const SUBCATEGORIES = {
   tops: ["long_sleeve", "tank_top", "t_shirt", "sleeveless", "blouse"],
-  bottoms: ["shorts", "skirt", "pants"],
+  bottoms: ["shorts", "mini_skirt", "midi_skirt", "maxi_skirt", "pants"],
   outerwear: ["coverup", "sweater", "jacket", "coat"],
   dresses: [],
   shoes: [],

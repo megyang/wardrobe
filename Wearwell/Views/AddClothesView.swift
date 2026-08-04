@@ -61,7 +61,6 @@ struct AddClothesView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .toolbar { SettingsButton(isPresented: $showSettings) }
-        .keyboardDismissToolbar()
         .onChange(of: pickerItems) { _, items in Task { await importItems(items) } }
         .sheet(isPresented: $showCamera) { CameraPicker { image in showCamera = false; guard let data = image.jpegData(compressionQuality: 0.9) else { return }; Task { await analyze(data: data, sourceURL: nil) } } }
         .task {

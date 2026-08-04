@@ -11,5 +11,6 @@ Companion/*.png
 Companion/*.jpg
 Companion/*.jpeg
 .recovery/
+tmp/
 xcuserdata/
 *.xcuserstate

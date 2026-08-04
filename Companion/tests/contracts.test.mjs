@@ -7,7 +7,7 @@ import { hasValidOutfitComposition } from "../outfit-rules.mjs";
 import { SerialQueue } from "../serial-queue.mjs";
 import { withAbortTimeout } from "../timeout.mjs";
 import { PriorityQueue } from "../priority-queue.mjs";
-import { outfitSchema } from "../response-schemas.mjs";
+import { outfitSchema, outfitSelectionSchema } from "../response-schemas.mjs";
 import { inspirationPrompt, inspirationSchema } from "../inspiration.mjs";
 
 test("purchase layout contract keeps candidate outside owned IDs", () => {
@@ -35,7 +35,17 @@ test("inspiration analysis is a reusable fixed style vector", () => {
   const axes = inspirationSchema.properties.vector.required;
   assert.deepEqual(axes, ["minimal", "maximal", "relaxed", "tailored", "romantic", "edgy", "sporty", "vintage", "classic", "experimental", "layered", "colorful"]);
   assert.match(inspirationPrompt(), /cached and reused/i);
+  assert.ok(inspirationSchema.required.includes("outfitFormula"));
+  assert.ok(inspirationSchema.required.includes("proportions"));
   assert.doesNotMatch(inspirationPrompt(), /identity.*infer/i);
+});
+
+test("fashion critic can only select known candidates", () => {
+  const schema = outfitSelectionSchema(["candidate-a", "candidate-b", "candidate-c"]);
+  const selection = schema.properties.selections;
+  assert.equal(selection.minItems, 3);
+  assert.equal(selection.maxItems, 3);
+  assert.deepEqual(selection.items.properties.candidateID.enum, ["candidate-a", "candidate-b", "candidate-c"]);
 });
 
 test("outfits allow explicit two-piece torso layers but only one bottom and dress", () => {
@@ -86,20 +96,27 @@ test("queued imports live for 24 hours and processing gets its own timeout", () 
 
 test("garment subcategories cannot cross parent categories", () => {
   assert.equal(normalizeSubcategory("tops", "tank_top"), "tank_top");
+  assert.equal(normalizeSubcategory("bottoms", "mini_skirt"), "mini_skirt");
+  assert.equal(normalizeSubcategory("bottoms", "midi_skirt"), "midi_skirt");
+  assert.equal(normalizeSubcategory("bottoms", "maxi_skirt"), "maxi_skirt");
+  assert.equal(normalizeSubcategory("bottoms", "skirt"), null);
   assert.equal(normalizeSubcategory("bottoms", "pants"), "pants");
   assert.equal(normalizeSubcategory("tops", "pants"), null);
   assert.equal(normalizeSubcategory("dresses", "misc"), null);
   assert.equal(normalizeSubcategory("accessories", "misc"), "misc");
 });
 
-test("catalog prompt requests a transparent clean product cutout", () => {
+test("catalog prompt requests a removable solid chroma product background", () => {
   const prompt = catalogPrompt({ label: "purple asymmetric skirt", observed: "purple leopard print and uneven hem", unknowns: ["back closure"] });
   assert.match(prompt, /ecommerce catalog cutout/i);
-  assert.match(prompt, /transparent canvas with a true alpha channel/i);
-  assert.match(prompt, /no backdrop color/i);
+  assert.match(prompt, /chroma green \(#00FF00\)/i);
+  assert.match(prompt, /do not draw transparency, a checkerboard, pixel grid/i);
   assert.match(prompt, /every edge fully visible/i);
   assert.match(prompt, /not a fashion visualization/i);
   assert.match(prompt, /purple leopard print and uneven hem/i);
+
+  const greenPrompt = catalogPrompt({ label: "pale mint green shirt", observed: "mint fabric", unknowns: [] });
+  assert.match(greenPrompt, /chroma magenta \(#FF00FF\)/i);
 });
 
 test("catalog image generation is serialized so photos cannot claim each other's artifact", async () => {

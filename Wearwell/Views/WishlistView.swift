@@ -134,8 +134,11 @@ struct WishlistView: View {
 
 private struct WishlistRow: View {
     let item: WishlistItem
+    private var assessmentIsActive: Bool {
+        item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } ?? false
+    }
     var body: some View {
-        HStack(spacing: 15) { CollageAssetImage(name: item.catalogAssetName).padding(6).frame(width: 92, height: 110).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(item.label).font(.headline); Text("\(item.color) · \(item.subcategory?.title ?? item.category.title)").font(.caption).foregroundStyle(.secondary); if let verdict = item.verdict { StatusPill(text: verdict.rawValue.uppercased(), color: verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral) } }; Spacer(); Image(systemName: "chevron.right") }.padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+        HStack(spacing: 15) { CollageAssetImage(name: item.catalogAssetName).padding(6).frame(width: 92, height: 110).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(item.label).font(.headline); Text("\(item.color) · \(item.subcategory?.title ?? item.category.title)").font(.caption).foregroundStyle(.secondary); if assessmentIsActive { StatusPill(text: "CREATING OUTFITS", color: WearwellTheme.sage) } else if let verdict = item.verdict { StatusPill(text: verdict.rawValue.uppercased(), color: verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral) } }; Spacer(); Image(systemName: "chevron.right") }.padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -306,24 +309,65 @@ struct WishlistDetailView: View {
     }
 
     private func apply(_ job: AssessmentJobDTO) {
-        item.assessmentState = job.state
-        item.assessmentStage = job.stage
-        item.assessmentEstimatedSecondsRemaining = job.estimatedSecondsRemaining
-        item.assessmentError = job.error
-        guard let raw = job.result else { return }
-        let value = OutfitValidator.validatePurchase(raw, garments: garments, candidateCategory: item.category)
-        assessment = value
-        item.verdict = value.verdict
-        item.verdictSummary = value.summary
-        for suggestion in value.outfits where !savedPurchaseOutfits.contains(where: { $0.title == suggestion.title && $0.rationale == suggestion.rationale }) {
-            context.insert(Outfit(title: suggestion.title, rationale: suggestion.rationale, origin: .purchaseTest, layout: purchaseLayout(for: suggestion), wishlistItemID: item.id))
-        }
+        assessment = PurchaseAssessmentResults.apply(job, to: item, garments: garments, outfits: outfits, context: context)
     }
-    private func purchaseLayout(for suggestion: OutfitSuggestionDTO) -> [LayoutItem] { var result = [LayoutItem(wishlistItemID: item.id, x: 0.5, y: 0.18, scale: 0.82, zIndex: 0)]; result += suggestion.garmentIDs.enumerated().map { index, id in LayoutItem(garmentID: id, x: index % 2 == 0 ? 0.3 : 0.7, y: min(0.45 + Double(index / 2) * 0.27, 0.84), scale: 0.75, zIndex: Double(index + 1)) }; return result }
+    private func purchaseLayout(for suggestion: OutfitSuggestionDTO) -> [LayoutItem] {
+        PurchaseAssessmentResults.layout(for: suggestion, candidateID: item.id)
+    }
     private func markPurchased() {
         let garment = Garment(label: item.label, category: item.category, subcategory: item.subcategory, color: item.color, details: item.details, confidence: 1, fingerprint: item.fingerprint, sourceAssetName: item.sourceAssetName, catalogAssetName: item.catalogAssetName, sourceURL: item.sourceURL, modelVersion: "gpt-5.6-luna")
         context.insert(garment)
         for outfit in outfits where outfit.wishlistItemID == item.id { outfit.layout = outfit.layout.map { value in var updated = value; if updated.wishlistItemID == item.id { updated.wishlistItemID = nil; updated.garmentID = garment.id }; return updated }; outfit.wishlistItemID = nil; outfit.updatedAt = .now }
         item.purchasedAt = .now; context.delete(item); try? context.save(); dismiss()
+    }
+}
+
+@MainActor
+enum PurchaseAssessmentResults {
+    @discardableResult
+    static func apply(
+        _ job: AssessmentJobDTO,
+        to item: WishlistItem,
+        garments: [Garment],
+        outfits: [Outfit],
+        context: ModelContext
+    ) -> PurchaseAssessmentDTO? {
+        item.assessmentState = job.state
+        item.assessmentStage = job.stage
+        item.assessmentEstimatedSecondsRemaining = job.estimatedSecondsRemaining
+        item.assessmentError = job.error
+        guard let raw = job.result else { return nil }
+
+        let value = OutfitValidator.validatePurchase(raw, garments: garments, candidateCategory: item.category)
+        item.verdict = value.verdict
+        item.verdictSummary = value.summary
+        let currentOutfits = (try? context.fetch(FetchDescriptor<Outfit>())) ?? outfits
+        var savedKeys = Set(currentOutfits.filter { $0.wishlistItemID == item.id && $0.origin == .purchaseTest }.map { "\($0.title)|\($0.rationale)" })
+        for suggestion in value.outfits {
+            let key = "\(suggestion.title)|\(suggestion.rationale)"
+            guard savedKeys.insert(key).inserted else { continue }
+            context.insert(Outfit(
+                title: suggestion.title,
+                rationale: suggestion.rationale,
+                origin: .purchaseTest,
+                layout: layout(for: suggestion, candidateID: item.id),
+                wishlistItemID: item.id
+            ))
+        }
+        return value
+    }
+
+    static func layout(for suggestion: OutfitSuggestionDTO, candidateID: UUID) -> [LayoutItem] {
+        var result = [LayoutItem(wishlistItemID: candidateID, x: 0.5, y: 0.18, scale: 0.82, zIndex: 0)]
+        result += suggestion.garmentIDs.enumerated().map { index, id in
+            LayoutItem(
+                garmentID: id,
+                x: index % 2 == 0 ? 0.3 : 0.7,
+                y: min(0.45 + Double(index / 2) * 0.27, 0.84),
+                scale: 0.75,
+                zIndex: Double(index + 1)
+            )
+        }
+        return result
     }
 }

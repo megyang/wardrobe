@@ -15,6 +15,9 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
     case blouse
     case shorts
     case skirt
+    case miniSkirt = "mini_skirt"
+    case midiSkirt = "midi_skirt"
+    case maxiSkirt = "maxi_skirt"
     case pants
     case coverup
     case sweater
@@ -28,7 +31,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
     var category: GarmentCategory {
         switch self {
         case .longSleeve, .tankTop, .tShirt, .sleeveless, .blouse: .tops
-        case .shorts, .skirt, .pants: .bottoms
+        case .shorts, .skirt, .miniSkirt, .midiSkirt, .maxiSkirt, .pants: .bottoms
         case .coverup, .sweater, .jacket, .coat: .outerwear
         case .tights, .hat, .misc: .accessories
         }
@@ -42,6 +45,9 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .blouse: "Blouse"
         case .shorts: "Shorts"
         case .skirt: "Skirt"
+        case .miniSkirt: "Mini skirt"
+        case .midiSkirt: "Midi skirt"
+        case .maxiSkirt: "Maxi skirt"
         case .pants: "Pants"
         case .coverup: "Cover-up"
         case .sweater: "Sweater"
@@ -58,7 +64,10 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .tankTop: "Tank tops"
         case .tShirt: "T-shirts"
         case .blouse: "Blouses"
-        case .skirt: "Skirts"
+        case .skirt: "Skirt"
+        case .miniSkirt: "Mini skirts"
+        case .midiSkirt: "Midi skirts"
+        case .maxiSkirt: "Maxi skirts"
         case .coverup: "Cover-ups"
         case .sweater: "Sweaters"
         case .jacket: "Jackets"
@@ -68,7 +77,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         }
     }
     static func options(for category: GarmentCategory) -> [GarmentSubcategory] {
-        allCases.filter { $0.category == category }
+        allCases.filter { $0.category == category && $0 != .skirt }
     }
 }
 
@@ -286,6 +295,12 @@ enum OutfitLayout {
         layout.contains { $0.garmentID == garmentID }
     }
 
+    func applyEdits(title: String, layout: [LayoutItem], at date: Date = .now) {
+        self.title = title
+        self.layout = layout
+        updatedAt = date
+    }
+
     init(id: UUID = UUID(), title: String, notes: String = "", rationale: String = "", origin: OutfitOrigin, layout: [LayoutItem], wishlistItemID: UUID? = nil) {
         self.id = id; self.title = title; self.notes = notes; self.rationale = rationale
         self.originRaw = origin.rawValue; self.layoutJSON = (try? JSONEncoder().encode(layout)) ?? Data()
@@ -348,6 +363,10 @@ struct StyleVectorDTO: Codable, Equatable {
 struct InspirationAnalysisDTO: Codable, Equatable {
     let summary: String
     let aesthetics, palette, silhouettes, layering, details, occasions: [String]
+    var outfitFormula: [String]? = nil
+    var proportions: [String]? = nil
+    var focalPoints: [String]? = nil
+    var stylingRules: [String]? = nil
     let vector: StyleVectorDTO
     let analysisVersion, modelVersion: String
 }
@@ -357,6 +376,10 @@ struct StyleProfileDTO: Codable, Equatable {
     let lookCount: Int
     let summary: String
     let aesthetics, palette, silhouettes, layering, details, occasions: [String]
+    var outfitFormula: [String]? = nil
+    var proportions: [String]? = nil
+    var focalPoints: [String]? = nil
+    var stylingRules: [String]? = nil
     let vector: StyleVectorDTO
 }
 

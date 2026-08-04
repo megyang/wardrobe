@@ -17,6 +17,15 @@ struct WardrobeView: View {
         }
     }
 
+    private var cutoutNames: [String] {
+        garments.map { $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName }
+            .filter { !$0.isEmpty }
+    }
+
+    private var cutoutPreparationKey: String {
+        cutoutNames.sorted().joined(separator: "|")
+    }
+
     var body: some View {
         ZStack {
             WearwellTheme.cream.ignoresSafeArea()
@@ -41,6 +50,14 @@ struct WardrobeView: View {
         }
         .searchable(text: $search, prompt: "Search clothes")
         .toolbar { SettingsButton(isPresented: $showSettings) }
+        .task(id: cutoutPreparationKey) {
+            let names = cutoutNames
+            await Task.detached(priority: .utility) {
+                // Warm the persistent cache sequentially to avoid competing
+                // Vision requests while visible cards load at user priority.
+                for name in names { _ = AssetStore.collageImage(named: name) }
+            }.value
+        }
     }
 
     private var categoryStrip: some View {

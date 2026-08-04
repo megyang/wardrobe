@@ -6,6 +6,36 @@ import Vision
 
 private final class CollageImageCache: @unchecked Sendable {
     let values = NSCache<NSString, UIImage>()
+    private let condition = NSCondition()
+    private var preparing: Set<String> = []
+
+    func load(key: NSString, operation: () -> UIImage?) -> UIImage? {
+        if let cached = values.object(forKey: key) { return cached }
+        let token = key as String
+        condition.lock()
+        while preparing.contains(token) {
+            condition.wait()
+            if let cached = values.object(forKey: key) {
+                condition.unlock()
+                return cached
+            }
+        }
+        if let cached = values.object(forKey: key) {
+            condition.unlock()
+            return cached
+        }
+        preparing.insert(token)
+        condition.unlock()
+
+        let result = operation()
+        if let result { values.setObject(result, forKey: key) }
+
+        condition.lock()
+        preparing.remove(token)
+        condition.broadcast()
+        condition.unlock()
+        return result
+    }
 }
 
 actor AssetStore {
@@ -53,6 +83,7 @@ actor AssetStore {
     func remove(named name: String?) {
         guard let name, !name.isEmpty else { return }
         try? FileManager.default.removeItem(at: directory.appending(path: name))
+        Self.removeCachedCollageImage(named: name)
         guard let container else { return }
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<AssetBlob>(predicate: #Predicate { $0.name == name })
@@ -96,22 +127,39 @@ actor AssetStore {
     /// and backdrop colors without treating white garments as background.
     nonisolated static func cachedCollageImage(named name: String) -> UIImage? {
         guard !name.isEmpty else { return nil }
-        return collageCache.values.object(forKey: collageCacheKey(for: name))
+        let key = collageCacheKey(for: name)
+        if let cached = collageCache.values.object(forKey: key) { return cached }
+        guard let diskImage = UIImage(contentsOfFile: collageDiskURL(for: name).path) else { return nil }
+        collageCache.values.setObject(diskImage, forKey: key)
+        return diskImage
     }
 
     nonisolated static func collageImage(named name: String) -> UIImage? {
         guard !name.isEmpty else { return nil }
         let key = collageCacheKey(for: name)
-        if let cached = collageCache.values.object(forKey: key) { return cached }
-        guard let source = image(named: name) else { return nil }
-        let cutout = preparedCollageImage(from: source)
-        collageCache.values.setObject(cutout, forKey: key)
-        return cutout
+        if let cached = cachedCollageImage(named: name) { return cached }
+        return collageCache.load(key: key) {
+            if let diskImage = UIImage(contentsOfFile: collageDiskURL(for: name).path) {
+                return diskImage
+            }
+            guard let source = image(named: name) else { return nil }
+            let cutout = preparedCollageImage(from: source)
+            persistCollageImage(cutout, named: name)
+            return cutout
+        }
     }
 
     nonisolated static func preparedCollageImage(from source: UIImage) -> UIImage {
-        if let checkerboardCutout = EmbeddedCheckerboardRefiner.refine(source) {
-            return AlphaBoundsCropper.crop(checkerboardCutout)
+        if let checkerboardFallback = EmbeddedCheckerboardRefiner.refine(source) {
+            // Rendered checkerboards contain small color variations that can be
+            // indistinguishable from white fabric. Vision reliably identifies
+            // the complete garment in these generated packshots; use the grid
+            // mask only when Vision cannot produce a plausible full-size item.
+            return ForegroundSubjectExtractor.extract(from: source)
+                ?? AlphaBoundsCropper.crop(checkerboardFallback)
+        }
+        if let chromaCutout = ChromaBackdropRefiner.refine(source) {
+            return AlphaBoundsCropper.crop(chromaCutout)
         }
         // Catalog images that already contain real transparency are finished
         // cutouts. Running Vision again can select a printed logo as the subject
@@ -124,8 +172,31 @@ actor AssetStore {
         return ForegroundSubjectExtractor.extract(from: source) ?? source
     }
 
+    private nonisolated static let collageCacheVersion = "sticker-v12"
+
     private nonisolated static func collageCacheKey(for name: String) -> NSString {
-        "sticker-v7-\(name)" as NSString
+        "\(collageCacheVersion)-\(name)" as NSString
+    }
+
+    private nonisolated static func collageDiskURL(for name: String) -> URL {
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return root.appending(path: "WearwellCutouts/\(collageCacheVersion)/\(name).png")
+    }
+
+    private nonisolated static func persistCollageImage(_ image: UIImage, named name: String) {
+        guard let data = image.pngData() else { return }
+        let url = collageDiskURL(for: name)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.complete]
+        )
+        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+    }
+
+    private nonisolated static func removeCachedCollageImage(named name: String) {
+        collageCache.values.removeObject(forKey: collageCacheKey(for: name))
+        try? FileManager.default.removeItem(at: collageDiskURL(for: name))
     }
 }
 
@@ -145,8 +216,10 @@ enum EmbeddedCheckerboardRefiner {
     /// alpha channel. Detect the two alternating light border colors and key them
     /// out before asking Vision to identify a foreground subject.
     static func refine(_ source: UIImage) -> UIImage? {
-        guard !ImageTransparencyDetector.hasMeaningfulTransparency(source),
-              let cgImage = source.cgImage else { return nil }
+        // Do not skip images that already have some transparency. Older builds
+        // erased only parts of rendered grids, leaving a mixture of clear holes
+        // and opaque checker pixels that still need repairing.
+        guard let cgImage = source.cgImage else { return nil }
         let width = cgImage.width
         let height = cgImage.height
         guard width > 8, height > 8 else { return nil }
@@ -205,21 +278,99 @@ enum EmbeddedCheckerboardRefiner {
         }
         guard let backdrop else { return nil }
 
-        for pixel in 0..<(width * height) {
-            let offset = pixel * 4
-            let red = Double(pixels[offset])
-            let green = Double(pixels[offset + 1])
-            let blue = Double(pixels[offset + 2])
-            let distance = backdrop.map { color in
-                sqrt(pow(red - color.red, 2) + pow(green - color.green, 2) + pow(blue - color.blue, 2))
-            }.min() ?? 255
-            let foregroundAlpha = max(0, min(1, (distance - 8) / 12))
-            for component in 0..<4 {
-                pixels[offset + component] = UInt8(Double(pixels[offset + component]) * foregroundAlpha)
+        let topLabels = (0..<width).map { nearestBackdrop(to: pixelColor(at: $0 * 4, in: pixels), colors: backdrop) }
+        let leftLabels = (0..<height).map { y in nearestBackdrop(to: pixelColor(at: y * bytesPerRow, in: pixels), colors: backdrop) }
+        let horizontalRuns = runLengths(in: topLabels)
+        let verticalRuns = runLengths(in: leftLabels)
+        // Generators occasionally flatten the first row or column even though
+        // the rest of the canvas contains a real checker grid. One alternating
+        // border is sufficient to route the image through Vision.
+        guard horizontalRuns.count >= 4 || verticalRuns.count >= 4 else { return nil }
+
+        let runs = (horizontalRuns + verticalRuns).filter { $0 >= 2 }.sorted()
+        guard !runs.isEmpty else { return nil }
+        let tileSize = runs[runs.count / 2]
+        let colorSeparation = colorDistance(backdrop[0], backdrop[1])
+        let matchTolerance = max(3, min(10, colorSeparation * 0.3))
+        let baseLabel = topLabels[0]
+        var foregroundMask = [UInt8](repeating: 0, count: width * height)
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * bytesPerRow + x * 4
+                let expectedLabel = topLabels[x] ^ leftLabels[y] ^ baseLabel
+                if colorDistance(pixelColor(at: offset, in: pixels), backdrop[expectedLabel]) > matchTolerance {
+                    foregroundMask[y * width + x] = 255
+                }
             }
         }
-        guard let refined = context.makeImage() else { return nil }
+
+        guard let maskContext = CGContext(
+            data: &foregroundMask,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ), let maskImage = maskContext.makeImage() else { return nil }
+
+        let sourceImage = CIImage(cgImage: cgImage)
+        let mask = CIImage(cgImage: maskImage)
+        let radius = max(2, min(32, Double(tileSize) * 0.75))
+        guard let expand = CIFilter(name: "CIMorphologyMaximum"),
+              let contract = CIFilter(name: "CIMorphologyMinimum"),
+              let blend = CIFilter(name: "CIBlendWithMask") else { return nil }
+        expand.setValue(mask, forKey: kCIInputImageKey)
+        expand.setValue(radius, forKey: kCIInputRadiusKey)
+        guard let expanded = expand.outputImage else { return nil }
+        contract.setValue(expanded, forKey: kCIInputImageKey)
+        contract.setValue(radius, forKey: kCIInputRadiusKey)
+        guard let closedMask = contract.outputImage?.cropped(to: sourceImage.extent) else { return nil }
+
+        blend.setValue(sourceImage, forKey: kCIInputImageKey)
+        blend.setValue(CIImage(color: .clear).cropped(to: sourceImage.extent), forKey: kCIInputBackgroundImageKey)
+        blend.setValue(closedMask, forKey: kCIInputMaskImageKey)
+        guard let output = blend.outputImage,
+              let refined = CIContext(options: [.cacheIntermediates: false]).createCGImage(output, from: sourceImage.extent)
+        else { return nil }
         return UIImage(cgImage: refined)
+    }
+
+    private static func pixelColor(at offset: Int, in pixels: [UInt8]) -> (red: Double, green: Double, blue: Double) {
+        (Double(pixels[offset]), Double(pixels[offset + 1]), Double(pixels[offset + 2]))
+    }
+
+    private static func nearestBackdrop(
+        to color: (red: Double, green: Double, blue: Double),
+        colors: [(red: Double, green: Double, blue: Double)]
+    ) -> Int {
+        colorDistance(color, colors[0]) <= colorDistance(color, colors[1]) ? 0 : 1
+    }
+
+    private static func colorDistance(
+        _ first: (red: Double, green: Double, blue: Double),
+        _ second: (red: Double, green: Double, blue: Double)
+    ) -> Double {
+        sqrt(pow(first.red - second.red, 2) + pow(first.green - second.green, 2) + pow(first.blue - second.blue, 2))
+    }
+
+    private static func runLengths(in labels: [Int]) -> [Int] {
+        guard let first = labels.first else { return [] }
+        var current = first
+        var length = 0
+        var result: [Int] = []
+        for label in labels {
+            if label == current {
+                length += 1
+            } else {
+                result.append(length)
+                current = label
+                length = 1
+            }
+        }
+        result.append(length)
+        return result
     }
 }
 
@@ -287,10 +438,10 @@ enum ForegroundSubjectExtractor {
                   let masked = CIContext(options: [.cacheIntermediates: false]).createCGImage(output, from: foreground.extent)
             else { return nil }
 
-            let cutout = AlphaBoundsCropper.crop(GreenBackdropRefiner.refine(
-                source: normalized,
-                masked: UIImage(cgImage: masked)
-            ))
+            let visionCutout = UIImage(cgImage: masked)
+            let cutout = AlphaBoundsCropper.crop(
+                ChromaBackdropRefiner.refine(source: normalized, masked: visionCutout) ?? visionCutout
+            )
             guard ForegroundCropValidator.isPlausible(cutout.size, relativeTo: normalized.size) else {
                 return nil
             }
@@ -313,13 +464,17 @@ enum ForegroundCropValidator {
     }
 }
 
-enum GreenBackdropRefiner {
+enum ChromaBackdropRefiner {
     /// Vision can classify the gaps in lace as part of the foreground instance.
     /// When image generation has supplied a dominant green backdrop, remove that
     /// chroma anywhere it appears, including enclosed holes and narrow openings.
-    static func refine(source: UIImage, masked: UIImage) -> UIImage {
-        guard let backdrop = dominantBorderGreen(in: source) else { return masked }
-        guard let maskedImage = masked.cgImage else { return masked }
+    static func refine(_ source: UIImage) -> UIImage? {
+        refine(source: source, masked: source)
+    }
+
+    static func refine(source: UIImage, masked: UIImage) -> UIImage? {
+        guard let backdrop = dominantBorderChroma(in: source) else { return nil }
+        guard let maskedImage = masked.cgImage else { return nil }
         let width = maskedImage.width
         let height = maskedImage.height
         let bytesPerRow = width * 4
@@ -332,12 +487,16 @@ enum GreenBackdropRefiner {
             bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return masked }
+        ) else { return nil }
         context.draw(maskedImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
+        var coverages = [Double](repeating: 1, count: width * height)
         for pixel in 0..<(width * height) {
             let offset = pixel * 4
-            guard pixels[offset + 3] > 0 else { continue }
+            guard pixels[offset + 3] > 0 else {
+                coverages[pixel] = 0
+                continue
+            }
             let existingAlpha = Double(pixels[offset + 3]) / 255
             let red = Double(pixels[offset]) / existingAlpha
             let green = Double(pixels[offset + 1]) / existingAlpha
@@ -347,16 +506,80 @@ enum GreenBackdropRefiner {
                 pow(green - backdrop.green, 2) +
                 pow(blue - backdrop.blue, 2)
             )
-            let backgroundAlpha = max(0, min(1, (distance - 24) / 54))
-            for component in 0..<4 {
-                pixels[offset + component] = UInt8(Double(pixels[offset + component]) * backgroundAlpha)
+            // Generated edges are antialiased blends of backdrop and garment.
+            // Estimate coverage, then solve the blend equation to remove the
+            // chroma spill instead of leaving a green or magenta fringe.
+            let foregroundCoverage = max(0, min(1, (distance - 18) / 132))
+            coverages[pixel] = foregroundCoverage
+            guard foregroundCoverage < 1 else { continue }
+            let combinedAlpha = existingAlpha * foregroundCoverage
+            guard foregroundCoverage > 0.001, combinedAlpha > 0.001 else {
+                pixels[offset] = 0; pixels[offset + 1] = 0
+                pixels[offset + 2] = 0; pixels[offset + 3] = 0
+                continue
+            }
+            let backgroundCoverage = 1 - foregroundCoverage
+            let cleanedRed = max(0, min(255, (red - backgroundCoverage * backdrop.red) / foregroundCoverage))
+            let cleanedGreen = max(0, min(255, (green - backgroundCoverage * backdrop.green) / foregroundCoverage))
+            let cleanedBlue = max(0, min(255, (blue - backgroundCoverage * backdrop.blue) / foregroundCoverage))
+            pixels[offset] = UInt8(cleanedRed * combinedAlpha)
+            pixels[offset + 1] = UInt8(cleanedGreen * combinedAlpha)
+            pixels[offset + 2] = UInt8(cleanedBlue * combinedAlpha)
+            pixels[offset + 3] = UInt8(255 * combinedAlpha)
+        }
+
+        // Some antialiased edge pixels are opaque but retain a faint chroma
+        // cast. Neutralize only the narrow ring next to keyed pixels, never the
+        // interior color of a legitimately green or magenta garment.
+        let greenBackdrop = backdrop.green > backdrop.red * 1.2 && backdrop.green > backdrop.blue * 1.2
+        let magentaBackdrop = backdrop.red > backdrop.green * 1.2 && backdrop.blue > backdrop.green * 1.2
+        if greenBackdrop || magentaBackdrop {
+            let radius = 3
+            for y in 0..<height {
+                for x in 0..<width {
+                    let pixel = y * width + x
+                    guard coverages[pixel] >= 0.999 else { continue }
+                    var bordersKeyedPixel = false
+                    for neighborY in max(0, y - radius)...min(height - 1, y + radius) {
+                        for neighborX in max(0, x - radius)...min(width - 1, x + radius)
+                        where coverages[neighborY * width + neighborX] < 0.999 {
+                            bordersKeyedPixel = true
+                            break
+                        }
+                        if bordersKeyedPixel { break }
+                    }
+                    guard bordersKeyedPixel else { continue }
+                    let offset = pixel * 4
+                    let alpha = Double(pixels[offset + 3]) / 255
+                    guard alpha > 0 else { continue }
+                    var red = Double(pixels[offset]) / alpha
+                    var green = Double(pixels[offset + 1]) / alpha
+                    var blue = Double(pixels[offset + 2]) / alpha
+                    if greenBackdrop, green > max(red, blue) + 12 {
+                        green = max(red, blue) + 12
+                    } else if magentaBackdrop {
+                        let neutralCeiling = green + 12
+                        red = min(red, neutralCeiling)
+                        blue = min(blue, neutralCeiling)
+                    }
+                    pixels[offset] = UInt8(max(0, min(255, red * alpha)))
+                    pixels[offset + 1] = UInt8(max(0, min(255, green * alpha)))
+                    pixels[offset + 2] = UInt8(max(0, min(255, blue * alpha)))
+                }
             }
         }
-        guard let refined = context.makeImage() else { return masked }
+        guard let refined = context.makeImage() else { return nil }
         return UIImage(cgImage: refined)
     }
 
-    private static func dominantBorderGreen(in source: UIImage) -> (red: Double, green: Double, blue: Double)? {
+    private struct ColorBin {
+        var count = 0
+        var red = 0.0
+        var green = 0.0
+        var blue = 0.0
+    }
+
+    private static func dominantBorderChroma(in source: UIImage) -> (red: Double, green: Double, blue: Double)? {
         guard let cgImage = source.cgImage else { return nil }
         let width = cgImage.width
         let height = cgImage.height
@@ -375,25 +598,33 @@ enum GreenBackdropRefiner {
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         let thickness = max(1, min(width, height) / 40)
-        var count = 0
-        var red = 0.0
-        var green = 0.0
-        var blue = 0.0
+        var bins: [Int: ColorBin] = [:]
+        var borderCount = 0
         for y in 0..<height {
             for x in 0..<width where x < thickness || x >= width - thickness || y < thickness || y >= height - thickness {
                 let offset = y * bytesPerRow + x * 4
                 guard pixels[offset + 3] > 16 else { continue }
-                let r = Double(pixels[offset])
-                let g = Double(pixels[offset + 1])
-                let b = Double(pixels[offset + 2])
-                guard g > r * 1.15, g > b * 1.12, g - min(r, b) > 28 else { continue }
-                red += r; green += g; blue += b; count += 1
+                borderCount += 1
+                let r = Int(pixels[offset])
+                let g = Int(pixels[offset + 1])
+                let b = Int(pixels[offset + 2])
+                guard max(r, max(g, b)) >= 170,
+                      max(r, max(g, b)) - min(r, min(g, b)) >= 80 else { continue }
+                let key = (r / 16 << 8) | (g / 16 << 4) | (b / 16)
+                var bin = bins[key, default: ColorBin()]
+                bin.count += 1
+                bin.red += Double(r); bin.green += Double(g); bin.blue += Double(b)
+                bins[key] = bin
             }
         }
 
-        let borderCount = max(1, 2 * thickness * (width + height - 2 * thickness))
-        guard count * 5 >= borderCount else { return nil }
-        return (red / Double(count), green / Double(count), blue / Double(count))
+        guard let dominant = bins.values.max(by: { $0.count < $1.count }),
+              dominant.count * 3 >= max(1, borderCount) else { return nil }
+        return (
+            dominant.red / Double(dominant.count),
+            dominant.green / Double(dominant.count),
+            dominant.blue / Double(dominant.count)
+        )
     }
 }
 

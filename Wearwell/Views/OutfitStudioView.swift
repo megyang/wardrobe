@@ -229,9 +229,29 @@ struct OutfitDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 EditorialHeader(eyebrow: outfit.originRaw, title: outfit.title, subtitle: outfit.rationale.isEmpty ? "An editable outfit from your wardrobe." : outfit.rationale)
                 CollagePreview(items: outfit.layout, garments: garments, candidate: candidate).frame(height: 430)
+                NavigationLink {
+                    CollageEditorView(outfit: outfit, wishlistItem: candidate)
+                } label: {
+                    Label("Edit outfit", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
                 HStack {
-                    NavigationLink { CollageEditorView(origin: outfit.origin, title: "\(outfit.title) copy", rationale: outfit.rationale, items: outfit.layout, wishlistItem: candidate) } label: { Label("Edit a copy", systemImage: "slider.horizontal.3") }.buttonStyle(.borderedProminent)
-                    Button { Task { await exportCollage() } } label: { Label("Export", systemImage: "square.and.arrow.up") }.buttonStyle(.bordered)
+                    NavigationLink {
+                        CollageEditorView(
+                            origin: outfit.origin,
+                            title: "\(outfit.title) copy",
+                            rationale: outfit.rationale,
+                            items: outfit.layout,
+                            wishlistItem: candidate
+                        )
+                    } label: {
+                        Label("Copy outfit", systemImage: "plus.square.on.square").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    Button { Task { await exportCollage() } } label: {
+                        Label("Export", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                 }
                 Text("Visualize").font(.title2.bold())
                 HStack {

@@ -77,6 +77,15 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(result.vintage, 2.0 / 3.0, accuracy: 0.0001)
     }
 
+    func testVersionOneInspirationStillDecodesForOneTimeUpgrade() throws {
+        let json = #"{"summary":"Old look","aesthetics":[],"palette":[],"silhouettes":[],"layering":[],"details":[],"occasions":[],"vector":{"minimal":0,"maximal":0,"relaxed":0,"tailored":0,"romantic":0,"edgy":0,"sporty":0,"vintage":0,"classic":0,"experimental":0,"layered":0,"colorful":0},"analysisVersion":"1","modelVersion":"test"}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(InspirationAnalysisDTO.self, from: json)
+
+        XCTAssertEqual(decoded.analysisVersion, "1")
+        XCTAssertNil(decoded.outfitFormula)
+        XCTAssertNil(decoded.proportions)
+    }
+
     func testLayoutRoundTripPreservesGeometry() throws {
         let original = LayoutItem(garmentID: UUID(), x: 0.23, y: 0.71, scale: 1.4, rotation: -12, zIndex: 4)
         let data = try JSONEncoder().encode([original])
@@ -142,6 +151,23 @@ final class WearwellTests: XCTestCase {
         XCTAssertFalse(outfit.contains(garmentID: UUID()))
     }
 
+    func testOutfitEditsUpdateTheSameSavedRecord() {
+        let originalID = UUID()
+        let firstItem = LayoutItem(garmentID: UUID())
+        let replacement = LayoutItem(garmentID: UUID(), x: 0.2, y: 0.7, scale: 1.3)
+        let outfit = Outfit(id: originalID, title: "Original", rationale: "Keep me", origin: .aiStyle, layout: [firstItem])
+        let editDate = Date(timeIntervalSince1970: 1234)
+
+        outfit.applyEdits(title: "Renamed", layout: [replacement], at: editDate)
+
+        XCTAssertEqual(outfit.id, originalID)
+        XCTAssertEqual(outfit.title, "Renamed")
+        XCTAssertEqual(outfit.layout, [replacement])
+        XCTAssertEqual(outfit.rationale, "Keep me")
+        XCTAssertEqual(outfit.origin, .aiStyle)
+        XCTAssertEqual(outfit.updatedAt, editDate)
+    }
+
     func testPurchaseValidationUsesOwnedIDsOnly() {
         let owned = UUID(), outside = UUID()
         let garment = Garment(id: owned, label: "Bottom", category: .bottoms, color: "Black")
@@ -150,6 +176,32 @@ final class WearwellTests: XCTestCase {
             OutfitSuggestionDTO(title: "Invented", rationale: "", garmentIDs: [outside])
         ])
         XCTAssertEqual(OutfitValidator.validatePurchase(assessment, garments: [garment], candidateCategory: .tops).outfits.map(\.title), ["Owned"])
+    }
+
+    @MainActor
+    func testBackgroundPurchaseResultIsSavedOnce() throws {
+        let container = try makeInMemoryContainer()
+        let context = container.mainContext
+        let candidate = WishlistItem(label: "Possible top", category: .tops, color: "Blue")
+        let bottom = Garment(label: "Black pants", category: .bottoms, color: "Black")
+        context.insert(candidate)
+        context.insert(bottom)
+        let result = PurchaseAssessmentDTO(
+            verdict: .buy,
+            summary: "Works with your wardrobe.",
+            outfits: [OutfitSuggestionDTO(title: "Easy pairing", rationale: "Balanced colors", garmentIDs: [bottom.id])]
+        )
+        let job = AssessmentJobDTO(
+            id: "assessment-1", kind: "assess", state: "completed", createdAt: "now", updatedAt: "now",
+            stage: "Complete", queuePosition: nil, estimatedSecondsRemaining: 0, result: result, error: nil
+        )
+
+        PurchaseAssessmentResults.apply(job, to: candidate, garments: [bottom], outfits: [], context: context)
+        PurchaseAssessmentResults.apply(job, to: candidate, garments: [bottom], outfits: [], context: context)
+        try context.save()
+
+        XCTAssertEqual(candidate.verdict, .buy)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Outfit>()).count, 1)
     }
 
     func testOutfitValidationAllowsDressWithBottomButRejectsDuplicateSlots() {
@@ -219,6 +271,11 @@ final class WearwellTests: XCTestCase {
         garment.category = .bottoms
         XCTAssertNil(garment.subcategory)
         XCTAssertEqual(GarmentSubcategory.options(for: .outerwear), [.coverup, .sweater, .jacket, .coat])
+        XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.miniSkirt))
+        XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.midiSkirt))
+        XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.maxiSkirt))
+        XCTAssertFalse(GarmentSubcategory.options(for: .bottoms).contains(.skirt))
+        XCTAssertEqual(GarmentSubcategory(rawValue: "skirt"), .skirt)
     }
 
     func testAlphaCropPreservesAWhiteGarment() {
@@ -238,7 +295,7 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(cutout.size, CGSize(width: 54, height: 64))
     }
 
-    func testGreenBackdropRefinerClearsEnclosedLaceHole() {
+    func testChromaBackdropRefinerClearsEnclosedLaceHole() {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
@@ -251,9 +308,50 @@ final class WearwellTests: XCTestCase {
             context.fill(CGRect(x: 17, y: 17, width: 6, height: 6))
         }
 
-        let refined = GreenBackdropRefiner.refine(source: source, masked: source)
+        guard let refined = ChromaBackdropRefiner.refine(source) else {
+            return XCTFail("Expected the solid chroma background to be detected")
+        }
         XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 20, y: 20)), 8)
         XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 12, y: 12)), 247)
+    }
+
+    func testMagentaChromaPreservesMintGarment() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 60, height: 80), format: format).image { context in
+            UIColor.magenta.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 60, height: 80))
+            UIColor(red: 0.75, green: 0.94, blue: 0.88, alpha: 1).setFill()
+            context.fill(CGRect(x: 12, y: 10, width: 36, height: 60))
+        }
+
+        guard let refined = ChromaBackdropRefiner.refine(source) else {
+            return XCTFail("Expected the magenta chroma background to be detected")
+        }
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 3, y: 3)), 8)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 30, y: 40)), 247)
+    }
+
+    func testChromaBackdropRefinerRemovesGreenEdgeSpill() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48), format: format).image { context in
+            UIColor(red: 0.02, green: 0.98, blue: 0.02, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 48, height: 48))
+            UIColor(red: 0.55, green: 0.92, blue: 0.55, alpha: 1).setFill()
+            context.fill(CGRect(x: 9, y: 9, width: 30, height: 30))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 12, y: 12, width: 24, height: 24))
+        }
+
+        guard let refined = ChromaBackdropRefiner.refine(source) else {
+            return XCTFail("Expected the green chroma background to be detected")
+        }
+        let edge = rgba(in: refined, at: CGPoint(x: 10, y: 24))
+        XCTAssertLessThanOrEqual(Int(edge.green), Int(max(edge.red, edge.blue)) + 14)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 20, y: 20)), 247)
     }
 
     func testExistingTransparentShirtIsNotRecroppedToItsPrintedGraphic() {
@@ -310,8 +408,88 @@ final class WearwellTests: XCTestCase {
         XCTAssertGreaterThan(AlphaBoundsCropper.crop(refined).size.width, 50)
     }
 
+    func testEmbeddedCheckerboardDoesNotEraseWhiteShirt() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 144), format: format).image { context in
+            for y in stride(from: 0, to: 144, by: 8) {
+                for x in stride(from: 0, to: 120, by: 8) {
+                    ((x / 8 + y / 8).isMultiple(of: 2) ? UIColor.white : UIColor(white: 0.92, alpha: 1)).setFill()
+                    context.fill(CGRect(x: x, y: y, width: 8, height: 8))
+                }
+            }
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 24, y: 16, width: 72, height: 112))
+            UIColor.red.setFill()
+            context.cgContext.fillEllipse(in: CGRect(x: 52, y: 58, width: 16, height: 18))
+        }
+
+        guard let refined = EmbeddedCheckerboardRefiner.refine(source) else {
+            return XCTFail("Expected the embedded checkerboard to be detected")
+        }
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 4, y: 4)), 8)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 32, y: 32)), 247)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 60, y: 100)), 247)
+        XCTAssertGreaterThan(AlphaBoundsCropper.crop(refined).size.width, 65)
+    }
+
+    func testPartiallyTransparentCheckerboardIsFullyRemoved() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 144), format: format).image { context in
+            for y in stride(from: 0, to: 144, by: 8) {
+                for x in stride(from: 0, to: 120, by: 8) {
+                    ((x / 8 + y / 8).isMultiple(of: 2) ? UIColor.white : UIColor(white: 0.92, alpha: 1)).setFill()
+                    context.fill(CGRect(x: x, y: y, width: 8, height: 8))
+                }
+            }
+            context.cgContext.clear(CGRect(x: 0, y: 32, width: 14, height: 20))
+            context.cgContext.clear(CGRect(x: 92, y: 0, width: 18, height: 12))
+            context.cgContext.clear(CGRect(x: 104, y: 88, width: 16, height: 24))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 24, y: 16, width: 72, height: 112))
+            UIColor.blue.setFill()
+            context.cgContext.fillEllipse(in: CGRect(x: 52, y: 58, width: 16, height: 18))
+        }
+
+        XCTAssertTrue(ImageTransparencyDetector.hasMeaningfulTransparency(source))
+        guard let refined = EmbeddedCheckerboardRefiner.refine(source) else {
+            return XCTFail("Expected the remaining checkerboard to be detected")
+        }
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 4, y: 4)), 8)
+        XCTAssertLessThan(alpha(in: refined, at: CGPoint(x: 112, y: 132)), 8)
+        XCTAssertGreaterThan(alpha(in: refined, at: CGPoint(x: 32, y: 32)), 247)
+        XCTAssertGreaterThan(AlphaBoundsCropper.crop(refined).size.width, 65)
+    }
+
+    func testCheckerboardWithOneFlattenedBorderStillRoutesToCleanup() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 144), format: format).image { context in
+            for y in stride(from: 0, to: 144, by: 8) {
+                for x in stride(from: 0, to: 120, by: 8) {
+                    ((x / 8 + y / 8).isMultiple(of: 2) ? UIColor.white : UIColor(white: 0.94, alpha: 1)).setFill()
+                    context.fill(CGRect(x: x, y: y, width: 8, height: 8))
+                }
+            }
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 120, height: 8))
+            UIColor.brown.setFill()
+            context.fill(CGRect(x: 28, y: 18, width: 64, height: 108))
+        }
+
+        XCTAssertNotNil(EmbeddedCheckerboardRefiner.refine(source))
+    }
+
     private func alpha(in image: UIImage, at point: CGPoint) -> UInt8 {
-        guard let cgImage = image.cgImage else { return 0 }
+        rgba(in: image, at: point).alpha
+    }
+
+    private func rgba(in image: UIImage, at point: CGPoint) -> (red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
+        guard let cgImage = image.cgImage else { return (0, 0, 0, 0) }
         let width = cgImage.width
         let height = cgImage.height
         let bytesPerRow = width * 4
@@ -324,11 +502,12 @@ final class WearwellTests: XCTestCase {
             bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return 0 }
+        ) else { return (0, 0, 0, 0) }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         let x = max(0, min(width - 1, Int(point.x)))
         let y = max(0, min(height - 1, Int(point.y)))
-        return pixels[y * bytesPerRow + x * 4 + 3]
+        let offset = y * bytesPerRow + x * 4
+        return (pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3])
     }
 
     @MainActor

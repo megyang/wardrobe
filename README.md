@@ -87,12 +87,15 @@ one bottom, two tops, and two torso pieces total. The Companion prompt and iPhon
 validator both apply the rule.
 
 The Inspiration tab accepts saved looks and Pinterest screenshots. Luna analyzes
-each image once into a fixed, explainable style vector plus reusable traits for
-palette, silhouette, layering, details, aesthetics, and occasion. The phone
+each image into a fixed, explainable style vector plus reusable traits, outfit
+formulas, proportion relationships, focal points, and styling rules. Existing
+version-1 inspiration is upgraded once when the Companion is available. The phone
 stores those per-look analyses and maintains a versioned aggregate style profile
 locally. Adding, deleting, or favoriting a look updates the cache; ordinary outfit
 requests do not reanalyze the images. Styling sends the compact profile and at
-most four locally selected relevant examples to Luna.
+most four locally selected relevant examples to Luna. Luna first creates six to
+eight valid combinations, then a separate critic pass rejects awkward, bland,
+physically implausible, or repetitive options and returns the best three.
 
 Each worker processes its own catalog images sequentially so generated images
 cannot cross between photos. Garment-analysis turns time out after four minutes and

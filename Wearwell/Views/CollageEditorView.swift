@@ -2,6 +2,7 @@ import SwiftData
 import SwiftUI
 
 struct CollageEditorView: View {
+    let existingOutfit: Outfit?
     let origin: OutfitOrigin
     let initialTitle: String
     let initialRationale: String
@@ -24,9 +25,22 @@ struct CollageEditorView: View {
     @State private var preparationStartedAt = Date.now
 
     init(origin: OutfitOrigin = .manual, title: String = "New outfit", rationale: String = "", items: [LayoutItem] = [], wishlistItem: WishlistItem? = nil) {
+        existingOutfit = nil
         self.origin = origin; initialTitle = title; initialRationale = rationale; initialItems = items; self.wishlistItem = wishlistItem
         _title = State(initialValue: title); _items = State(initialValue: items)
         _preparing = State(initialValue: !items.isEmpty)
+    }
+
+    init(outfit: Outfit, wishlistItem: WishlistItem? = nil) {
+        existingOutfit = outfit
+        origin = outfit.origin
+        initialTitle = outfit.title
+        initialRationale = outfit.rationale
+        initialItems = outfit.layout
+        self.wishlistItem = wishlistItem
+        _title = State(initialValue: outfit.title)
+        _items = State(initialValue: outfit.layout)
+        _preparing = State(initialValue: !outfit.layout.isEmpty)
     }
 
     var body: some View {
@@ -54,8 +68,14 @@ struct CollageEditorView: View {
             controls
         }
         .background(WearwellTheme.cream.ignoresSafeArea())
-        .navigationTitle(origin == .manual ? "Manual collage" : "Edit collage").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(items.isEmpty) } }
+        .navigationTitle(existingOutfit == nil ? (origin == .manual ? "Manual collage" : "Edit collage") : "Edit outfit")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(existingOutfit == nil ? "Save" : "Save changes") { save() }
+                    .disabled(items.isEmpty)
+            }
+        }
         .sheet(isPresented: $showPicker) { garmentPicker }
         .task(id: preparationKey) { await prepareCollageImages() }
     }
@@ -64,7 +84,7 @@ struct CollageEditorView: View {
         HStack(spacing: 18) {
             Button { showPicker = true } label: { Label("Add", systemImage: "plus") }
             Button { snapLayout() } label: { Label("Arrange", systemImage: "rectangle.3.group") }.disabled(items.isEmpty)
-            Button { duplicateSelected() } label: { Label("Duplicate", systemImage: "plus.square.on.square") }.disabled(selectedID == nil)
+            Button { duplicateSelected() } label: { Label("Duplicate piece", systemImage: "plus.square.on.square") }.disabled(selectedID == nil)
             Button(role: .destructive) { items.removeAll { $0.id == selectedID }; selectedID = nil } label: { Image(systemName: "trash") }.disabled(selectedID == nil)
         }.font(.caption.weight(.semibold)).padding().frame(maxWidth: .infinity).background(.ultraThinMaterial)
     }
@@ -100,6 +120,7 @@ struct CollageEditorView: View {
             .searchable(text: $pickerSearch, prompt: "Search clothes")
             .toolbar { Button("Done") { showPicker = false } }
         }
+        .keyboardDismissToolbar()
     }
 
     private var filteredGarments: [Garment] {
@@ -188,7 +209,23 @@ struct CollageEditorView: View {
     }
     private func duplicateSelected() { guard let selected = items.first(where: { $0.id == selectedID }) else { return }; var copy = selected; copy.id = UUID(); copy.x += 0.05; copy.y += 0.05; copy.zIndex = (items.map(\.zIndex).max() ?? 0) + 1; items.append(copy); selectedID = copy.id }
     private func snapLayout() { items = OutfitLayout.arranged(items) }
-    private func save() { context.insert(Outfit(title: title.isEmpty ? "Untitled outfit" : title, rationale: initialRationale, origin: origin, layout: items, wishlistItemID: wishlistItem?.id)); try? context.save(); dismiss() }
+    private func save() {
+        let savedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedTitle = savedTitle.isEmpty ? "Untitled outfit" : savedTitle
+        if let existingOutfit {
+            existingOutfit.applyEdits(title: normalizedTitle, layout: items)
+        } else {
+            context.insert(Outfit(
+                title: normalizedTitle,
+                rationale: initialRationale,
+                origin: origin,
+                layout: items,
+                wishlistItemID: wishlistItem?.id
+            ))
+        }
+        try? context.save()
+        dismiss()
+    }
 }
 
 private struct CollagePreparationView: View {

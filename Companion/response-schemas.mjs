@@ -23,3 +23,14 @@ export function assessmentSchema(validIDs) {
     outfits: outfitSchema(validIDs, 3, 5, [...validIDs, "__candidate__"]).properties.outfits
   }};
 }
+
+export function outfitSelectionSchema(candidateIDs) {
+  return { type: "object", additionalProperties: false, required: ["selections"], properties: {
+    selections: { type: "array", minItems: 3, maxItems: 3, items: {
+      type: "object", additionalProperties: false, required: ["candidateID", "title", "rationale"], properties: {
+        candidateID: { type: "string", enum: candidateIDs },
+        title: { type: "string" }, rationale: { type: "string" }
+      }
+    }}
+  }};
+}
