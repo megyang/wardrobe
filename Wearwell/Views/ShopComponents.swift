@@ -92,8 +92,13 @@ struct ShoppingPreferencesView: View {
                 }
             }
             Section("Clothing") {
-                Toggle("Women's and unisex only", isOn: womensAndUnisexBinding)
-                Text("When enabled, Shop excludes products identified as men's clothing. Unisex pieces remain eligible.")
+                Picker("Audience", selection: audienceBinding) {
+                    ForEach(ShoppingAudience.allCases) { audience in
+                        Text(audience.title).tag(audience)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Shop searches and ranks clothing for the selected audience. Change this before refreshing or starting a search.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("UCP catalogs") {
@@ -160,10 +165,10 @@ struct ShoppingPreferencesView: View {
         })
     }
 
-    private var womensAndUnisexBinding: Binding<Bool> {
+    private var audienceBinding: Binding<ShoppingAudience> {
         Binding(
-            get: { profile.preferences.limitsToWomensAndUnisex },
-            set: { enabled in update { $0.womensAndUnisexOnly = enabled } }
+            get: { profile.preferences.selectedAudience },
+            set: { audience in update { $0.selectedAudience = audience } }
         )
     }
 

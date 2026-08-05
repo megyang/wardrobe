@@ -76,11 +76,11 @@ test("provider discovers the profile, searches without wardrobe data, and return
   assert.equal(result.cursor, "next");
   const body = requests[1].options.body;
   assert.match(body, /layering top/);
-  assert.match(body, /women's or unisex/i);
+  assert.match(body, /women's clothing/i);
   assert.doesNotMatch(body, /wardrobe|inspiration/i);
 });
 
-test("UCP catalog removes explicit men's products but keeps unisex products", async () => {
+test("UCP catalog keeps only the selected unisex audience", async () => {
   const mens = structuredClone(product);
   mens.id = "gid://shopify/Product/mens"; mens.title = "Men's Woven Shirt"; mens.url = "https://shop.example/products/mens-woven-shirt";
   const unisex = structuredClone(product);
@@ -89,7 +89,7 @@ test("UCP catalog removes explicit men's products but keeps unisex products", as
     ? new Response(JSON.stringify(profile), { status: 200, headers: { "content-type": "application/json" } })
     : new Response(JSON.stringify({ result: { structuredContent: { products: [mens, unisex] } } }), { status: 200, headers: { "content-type": "application/json" } });
   const provider = createUCPShopProvider({ fetchImpl, validateURL: async value => new URL(String(value)) });
-  const result = await provider.searchCatalog({ domain: "shop.example", query: "shirt", preferences: {} });
+  const result = await provider.searchCatalog({ domain: "shop.example", query: "shirt", preferences: { clothingAudience: "unisex" } });
   assert.deepEqual(result.products.map(item => item.sourceProductID), [unisex.id]);
 });
 

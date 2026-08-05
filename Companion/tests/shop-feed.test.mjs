@@ -24,10 +24,15 @@ test("feed keeps building to forty and stops low-confidence expansion after fort
   assert.equal(shouldContinueShopFeed({ publishedCount: 60, candidatesRemaining: 10, lastWaveConfidence: 1 }), false);
 });
 
-test("women's and unisex preference excludes explicit men's products", () => {
-  assert.equal(allowsShoppingAudience({ title: "Men's Oxford Shirt" }, {}), false);
-  assert.equal(allowsShoppingAudience({ title: "Relaxed Unisex Oxford Shirt" }, {}), true);
-  assert.equal(allowsShoppingAudience({ title: "Oxford Shirt", canonicalURL: "https://shop.example/products/mens-oxford" }, {}), false);
-  assert.equal(allowsShoppingAudience({ title: "Men's Oxford Shirt" }, { womensAndUnisexOnly: false }), true);
-  assert.match(audienceConstrainedQuery("linen shirt", {}), /women's or unisex/i);
+test("audience preference supports women's, unisex, and men's clothing", () => {
+  const womens = { title: "Women's Oxford Shirt" };
+  const unisex = { title: "Relaxed Unisex Oxford Shirt" };
+  const mens = { title: "Men's Oxford Shirt", canonicalURL: "https://shop.example/products/mens-oxford" };
+  assert.equal(allowsShoppingAudience(womens, { clothingAudience: "women" }), true);
+  assert.equal(allowsShoppingAudience(mens, { clothingAudience: "women" }), false);
+  assert.equal(allowsShoppingAudience(unisex, { clothingAudience: "unisex" }), true);
+  assert.equal(allowsShoppingAudience(womens, { clothingAudience: "unisex" }), false);
+  assert.equal(allowsShoppingAudience(mens, { clothingAudience: "men" }), true);
+  assert.equal(allowsShoppingAudience(womens, { clothingAudience: "men" }), false);
+  assert.match(audienceConstrainedQuery("linen shirt", { clothingAudience: "men" }), /men's clothing/i);
 });

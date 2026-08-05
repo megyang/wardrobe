@@ -20,18 +20,18 @@ test("shop providers enforce selected domains and deduplicate canonical products
   assert.equal(products.length, 1);
   assert.match(searchedPrompt, /only these retailer domains: shop\.example/i);
   assert.match(searchedPrompt, /untrusted data/i);
-  assert.match(searchedPrompt, /only women's or explicitly unisex/i);
+  assert.match(searchedPrompt, /only women's clothing/i);
   assert.doesNotMatch(searchedPrompt, /owned wardrobe|style profile/i);
   assert.deepEqual(verifiedDomains, [["shop.example"], ["shop.example"]]);
 });
 
-test("web discovery deterministically removes verified men's pages when the preference is enabled", async () => {
+test("web discovery deterministically keeps only the selected audience", async () => {
   const provider = createLiveWebShopProvider({
-    search: async () => ({ candidates: [{ url: "https://shop.example/mens-shirt" }, { url: "https://shop.example/unisex-shirt" }] }),
-    verify: async url => url.includes("mens-")
+    search: async () => ({ candidates: [{ url: "https://shop.example/mens-shirt" }, { url: "https://shop.example/womens-shirt" }] }),
+    verify: async url => url.includes("mens-") && !url.includes("womens-")
       ? { id: "mens", canonicalURL: url, title: "Men's Shirt" }
-      : { id: "unisex", canonicalURL: url, title: "Unisex Shirt" }
+      : { id: "women", canonicalURL: url, title: "Women's Shirt" }
   });
-  const products = await provider.discoverVerifiedProducts({ query: "shirt", domains: ["shop.example"], preferences: {} });
-  assert.deepEqual(products.map(item => item.id), ["unisex"]);
+  const products = await provider.discoverVerifiedProducts({ query: "shirt", domains: ["shop.example"], preferences: { clothingAudience: "men" } });
+  assert.deepEqual(products.map(item => item.id), ["mens"]);
 });

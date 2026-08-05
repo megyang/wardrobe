@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { assertSafeHTTPSURL, normalizeCategory, normalizeDomain } from "./shop-discovery.mjs";
-import { allowsShoppingAudience, audienceConstrainedQuery, limitsToWomensAndUnisex } from "./shop-feed.mjs";
+import { allowsShoppingAudience, audienceConstrainedQuery, shoppingAudienceLabel } from "./shop-feed.mjs";
 
 // Shopify documents this profile only for development/testing. Keep it isolated
 // so a production build cannot accidentally hide the need for Wearwell's own URL.
@@ -143,9 +143,7 @@ export function createUCPShopProvider({
       context: {
         address_country: String(preferences.country || "US").toUpperCase(),
         currency: String(preferences.currency || "USD").toUpperCase(),
-        intent: limitsToWomensAndUnisex(preferences)
-          ? "Find only women's or unisex clothing matching the shopper's stated request and regional constraints. Exclude men's clothing."
-          : "Find clothing matching the shopper's stated request and regional constraints."
+        intent: `Find only ${shoppingAudienceLabel(preferences)} clothing matching the shopper's stated request and regional constraints. Exclude products for other audiences.`
       },
       pagination: { limit: Math.max(1, Math.min(12, limit)), ...(cursor ? { cursor } : {}) },
       ...(filters ? { filters } : {})

@@ -28,21 +28,30 @@ export function shouldContinueShopFeed({ publishedCount, candidatesRemaining, la
   return publishedCount < 48 || lastWaveConfidence >= 0.55;
 }
 
-export function limitsToWomensAndUnisex(preferences) {
-  return preferences?.womensAndUnisexOnly !== false;
+export function shoppingAudience(preferences) {
+  const value = String(preferences?.clothingAudience || "women").toLowerCase();
+  return ["women", "unisex", "men"].includes(value) ? value : "women";
+}
+
+export function shoppingAudienceLabel(preferences) {
+  return { women: "women's", unisex: "unisex", men: "men's" }[shoppingAudience(preferences)];
 }
 
 export function audienceConstrainedQuery(query, preferences) {
   const value = String(query || "").trim();
-  return limitsToWomensAndUnisex(preferences) ? `women's or unisex clothing: ${value}` : value;
+  return `${shoppingAudienceLabel(preferences)} clothing: ${value}`;
 }
 
 export function allowsShoppingAudience(product, preferences) {
-  if (!limitsToWomensAndUnisex(preferences)) return true;
   const text = [product?.title, product?.description, product?.canonicalURL, ...(product?.tags || [])]
     .filter(Boolean).join(" ").toLowerCase();
-  const includesAllowedAudience = /\b(?:women|woman|womens|women's|female|ladies|unisex)\b/.test(text);
-  const includesMensAudience = /\b(?:men|man|mens|men's|male|menswear)\b/.test(text) ||
+  const womens = /\b(?:women|woman|womens|women['’]s|female|ladies)\b/.test(text);
+  const mens = /\b(?:men|man|mens|men['’]s|male|menswear)\b/.test(text) ||
     /(?:^|[\/_-])mens?(?:[\/_-]|$)/.test(text);
-  return !includesMensAudience || includesAllowedAudience;
+  const unisex = /\b(?:unisex|gender[- ]?neutral)\b/.test(text) || (womens && mens);
+  switch (shoppingAudience(preferences)) {
+  case "unisex": return unisex;
+  case "men": return !unisex && (!womens || mens);
+  default: return !unisex && (!mens || womens);
+  }
 }

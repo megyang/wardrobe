@@ -1,6 +1,18 @@
 import Foundation
 import SwiftData
 
+enum ShoppingAudience: String, Codable, CaseIterable, Identifiable {
+    case women, unisex, men
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .women: "Women's"
+        case .unisex: "Unisex"
+        case .men: "Men's"
+        }
+    }
+}
+
 struct ShoppingProfileDTO: Codable, Equatable {
     var country: String = "US"
     var currency: String = "USD"
@@ -11,7 +23,7 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var excludedCategories: [String] = []
     var excludedColors: [String] = []
     var excludedMaterials: [String] = []
-    var womensAndUnisexOnly: Bool? = true
+    var clothingAudience: String? = ShoppingAudience.women.rawValue
     var dismissedProductIDs: [String] = []
     var bundledRetailerVersion: Int? = ShoppingRetailer.currentDefaultsVersion
 
@@ -22,7 +34,10 @@ struct ShoppingProfileDTO: Codable, Equatable {
             .filter { seen.insert($0).inserted }
     }
 
-    var limitsToWomensAndUnisex: Bool { womensAndUnisexOnly ?? true }
+    var selectedAudience: ShoppingAudience {
+        get { ShoppingAudience(rawValue: clothingAudience ?? "") ?? .women }
+        set { clothingAudience = newValue.rawValue }
+    }
 }
 
 struct ShoppingRetailer: Identifiable, Equatable {

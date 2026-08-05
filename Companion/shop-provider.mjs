@@ -1,5 +1,5 @@
 import { verifyProductPage } from "./shop-discovery.mjs";
-import { allowsShoppingAudience, limitsToWomensAndUnisex } from "./shop-feed.mjs";
+import { allowsShoppingAudience, shoppingAudienceLabel } from "./shop-feed.mjs";
 
 // Catalog adapters return the same verified product shape. A future ACP/UCP
 // provider can implement this contract without changing phone DTOs or ranking.
@@ -20,9 +20,7 @@ export function createLiveWebShopProvider({ search, verify = verifyProductPage }
         `Search only these retailer domains: ${domains.join(", ")}.`,
         `Request: ${query}.`,
         `Shopping constraints: ${JSON.stringify(preferences || {})}.`,
-        limitsToWomensAndUnisex(preferences)
-          ? "Return only women's or explicitly unisex clothing. Exclude men's products."
-          : "Products for any clothing audience are allowed.",
+        `Return only ${shoppingAudienceLabel(preferences)} clothing. Exclude products for other audiences.`,
         "Favor individual pieces matching the request and constraints. Include sale candidates when relevant, but do not invent prices. Return canonical-looking individual product URLs, not category, search, cart, social, or editorial pages. Find more candidates than needed so verification can discard stale pages."
       ].join("\n\n");
       const found = await search(prompt, schema, { signal, workerIndex });
