@@ -825,11 +825,17 @@ async function recommendWardrobeGaps(body, signal = null, workerIndex = null) {
     `Evidence legend:\n${visuals.legend.join("\n") || "No pictures were available; reason conservatively from metadata."}`
   ].join("\n\n");
   try {
-    return await structured(
+    const result = await structured(
       prompt, visuals.files,
       wardrobeGapSchema(Object.keys(SUBCATEGORIES), [...new Set(Object.values(SUBCATEGORIES).flat())]),
       signal, workerIndex
     );
+    return {
+      gaps: (result.gaps || []).map(gap => ({
+        ...gap,
+        subcategory: normalizeSubcategory(gap.category, gap.subcategory) || "none"
+      }))
+    };
   } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
 }
 
