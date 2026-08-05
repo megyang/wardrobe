@@ -28,7 +28,7 @@ struct RootTabView: View {
                 .tabItem { Label("Inspire", systemImage: "heart.rectangle") }.tag(2)
             NavigationStack { WishlistView(showSettings: $showSettings) }
                 .keyboardDismissToolbar()
-                .tabItem { Label("Buy?", systemImage: "bag") }.tag(3)
+                .tabItem { Label("Shop", systemImage: "bag") }.tag(3)
             NavigationStack { AddClothesView(showSettings: $showSettings) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Add", systemImage: "plus.circle.fill") }.tag(4)

@@ -265,6 +265,25 @@ final class CompanionClient: ObservableObject {
         return OutfitValidator.validateAI(decoded.outfits, garments: garments, anchorID: anchorID)
     }
 
+    func recommendItem(garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory, subcategory: GarmentSubcategory?) async throws -> ItemRecommendationDTO {
+        status = .busy; defer { status = .available }
+        let selected = Set(selectedGarmentIDs)
+        let matches: (Garment) -> Bool = { $0.category == category && (subcategory == nil || $0.subcategory == subcategory) }
+        let relevant = garments.filter { selected.contains($0.id) || matches($0) }
+        let visuals = await visualReferences(relevant.map {
+            VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
+        }, byteBudget: 11 * 1024 * 1024)
+        let payload = ItemRecommendationRequest(
+            wardrobe: garments.map(GarmentSummary.init), selectedGarmentIDs: selectedGarmentIDs,
+            category: category.rawValue, subcategory: subcategory?.rawValue, garmentVisuals: visuals
+        )
+        let data = try await send(path: "v1/recommend-item", body: payload)
+        let result = try JSONDecoder().decode(ItemRecommendationDTO.self, from: data)
+        guard let garment = garments.first(where: { $0.id == result.garmentID }),
+              !selected.contains(result.garmentID), matches(garment) else { throw ClientError.invalidResponse }
+        return result
+    }
+
     func submitStyle(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook], recentOutfits: [OutfitSuggestionDTO] = [], outfitFeedback: [OutfitFeedbackDTO] = [], savedOutfits: [SavedOutfitExampleDTO] = [], outfitEdits: [OutfitEditFeedbackDTO] = []) async throws -> StyleJobDTO {
         status = .busy
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue outfit recommendations")
@@ -330,6 +349,34 @@ final class CompanionClient: ObservableObject {
     func assessmentJob(id: String) async throws -> AssessmentJobDTO {
         let data = try await send(path: "v1/jobs/\(id)", method: "GET", body: Optional<String>.none)
         return try JSONDecoder().decode(AssessmentJobDTO.self, from: data)
+    }
+
+    func submitShopDiscovery(
+        query: String,
+        garments: [Garment],
+        styleProfile: StyleProfile?,
+        shoppingProfile: ShoppingProfileDTO
+    ) async throws -> ShopDiscoveryJobDTO {
+        status = .busy
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue shop discovery")
+        defer {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            status = .available
+        }
+        let payload = ShopDiscoveryRequest(
+            query: query,
+            retailerDomains: shoppingProfile.retailerDomains,
+            preferences: shoppingProfile,
+            styleProfile: styleProfile?.profile,
+            wardrobe: garments.map(GarmentSummary.init)
+        )
+        let data = try await send(path: "v1/jobs/shop-discovery", body: payload)
+        return try JSONDecoder().decode(ShopDiscoveryJobDTO.self, from: data)
+    }
+
+    func shopDiscoveryJob(id: String) async throws -> ShopDiscoveryJobDTO {
+        let data = try await send(path: "v1/jobs/\(id)", method: "GET", body: Optional<String>.none)
+        return try JSONDecoder().decode(ShopDiscoveryJobDTO.self, from: data)
     }
 
     func render(mode: VisualizationMode, reference: Data, garmentImages: [Data]) async throws -> Data {
@@ -517,6 +564,19 @@ struct AssessmentJobDTO: Codable {
     let error: String?
 }
 
+struct ShopDiscoveryJobDTO: Codable {
+    let id: String
+    let kind: String
+    let state: String
+    let createdAt: String
+    let updatedAt: String
+    let stage: String?
+    let queuePosition: Int?
+    let estimatedSecondsRemaining: Int?
+    let result: ShopFeedDTO?
+    let error: String?
+}
+
 struct CatalogEditJobDTO: Codable {
     let id: String
     let kind: String
@@ -603,6 +663,17 @@ private struct StyleRequest: Codable {
     let outfitEdits: [OutfitEditFeedbackDTO]
     let garmentVisuals, inspirationVisuals: [VisualReference]
 }
+private struct ItemRecommendationRequest: Codable {
+    let wardrobe: [GarmentSummary]
+    let selectedGarmentIDs: [UUID]
+    let category: String
+    let subcategory: String?
+    let garmentVisuals: [VisualReference]
+}
+struct ItemRecommendationDTO: Codable, Equatable {
+    let garmentID: UUID
+    let rationale: String
+}
 struct StyleResponse: Codable { let outfits: [OutfitSuggestionDTO] }
 private struct AssessmentRequest: Codable {
     let candidate: CandidateSummary
@@ -611,6 +682,13 @@ private struct AssessmentRequest: Codable {
     let inspirationExamples: [InspirationExample]
     let candidateVisual: VisualReference?
     let garmentVisuals, inspirationVisuals: [VisualReference]
+}
+private struct ShopDiscoveryRequest: Codable {
+    let query: String
+    let retailerDomains: [String]
+    let preferences: ShoppingProfileDTO
+    let styleProfile: StyleProfileDTO?
+    let wardrobe: [GarmentSummary]
 }
 private struct RenderRequest: Codable { let mode, referenceBase64: String; let garmentImagesBase64: [String] }
 struct RenderResponse: Codable { let imageBase64: String }

@@ -1,9 +1,7 @@
 import SwiftData
 import SwiftUI
 
-/// First explicit schema baseline. The existing unversioned store also used
-/// SwiftData's 1.0.0 schema version, so adding cloud-safe fields remains a
-/// lightweight in-place upgrade instead of moving the user's database.
+/// Documents the personal-local schema before Shop was introduced.
 enum WearwellSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
     static let models: [any PersistentModel.Type] = [
@@ -13,15 +11,27 @@ enum WearwellSchemaV1: VersionedSchema {
     ]
 }
 
+enum WearwellSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any PersistentModel.Type] = [
+        Garment.self, WishlistItem.self, Outfit.self, Visualization.self,
+        ReferencePhoto.self, ImportDraft.self, InspirationLook.self,
+        StyleProfile.self, StyleGeneration.self, AssetBlob.self,
+        ShoppingProfile.self, ShopFeedSnapshot.self
+    ]
+}
+
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV1.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV2.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
+        // Existing personal-local installs used an unversioned SwiftData store.
+        // Automatic lightweight migration can adopt it; a staged plan cannot.
         do { return try ModelContainer(for: schema, configurations: [configuration]) }
         catch { fatalError("Unable to create Wearwell store: \(error)") }
     }()

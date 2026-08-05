@@ -15,6 +15,7 @@ struct WearwellBackupManifest: Codable {
     var referencePhotos: [ReferencePhotoRecord]
     var inspirationLooks: [InspirationLookRecord]
     var styleProfiles: [StyleProfileRecord]
+    var shoppingProfiles: [ShoppingProfileRecord]? = nil
     var assets: [AssetRecord]
 
     struct GarmentRecord: Codable {
@@ -52,6 +53,10 @@ struct WearwellBackupManifest: Codable {
 
     struct StyleProfileRecord: Codable {
         var id: UUID; var signature: String; var revision: Int; var profileJSON: Data; var updatedAt: Date
+    }
+
+    struct ShoppingProfileRecord: Codable {
+        var id: UUID; var profileJSON: Data; var updatedAt: Date
     }
 
     struct AssetRecord: Codable {
@@ -171,6 +176,7 @@ enum BackupService {
         let references = try context.fetch(FetchDescriptor<ReferencePhoto>())
         let inspiration = try context.fetch(FetchDescriptor<InspirationLook>())
         let profiles = try context.fetch(FetchDescriptor<StyleProfile>())
+        let shoppingProfiles = try context.fetch(FetchDescriptor<ShoppingProfile>())
         let blobs = try context.fetch(FetchDescriptor<AssetBlob>())
 
         var assetRecords: [String: WearwellBackupManifest.AssetRecord] = [:]
@@ -201,6 +207,7 @@ enum BackupService {
             referencePhotos: references.map { .init(id: $0.id, label: $0.label, assetName: $0.assetName, isDefault: $0.isDefault, createdAt: $0.createdAt) },
             inspirationLooks: inspiration.map { .init(id: $0.id, assetName: $0.assetName, sourceURL: $0.sourceURL, state: $0.state, analysisJSON: $0.analysisJSON, errorMessage: $0.errorMessage, isFavorite: $0.isFavorite, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
             styleProfiles: profiles.map { .init(id: $0.id, signature: $0.signature, revision: $0.revision, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
+            shoppingProfiles: shoppingProfiles.map { .init(id: $0.id, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
             assets: assetRecords.values.sorted { $0.name < $1.name }
         )
         let encoder = JSONEncoder.wearwell
@@ -225,7 +232,8 @@ enum BackupService {
         // Decode every transformable value before changing the context.
         guard manifest.garments.allSatisfy({ (try? JSONDecoder().decode([String].self, from: $0.unknownsJSON)) != nil }),
               manifest.outfits.allSatisfy({ (try? JSONDecoder().decode([LayoutItem].self, from: $0.layoutJSON)) != nil }),
-              manifest.styleProfiles.allSatisfy({ (try? JSONDecoder().decode(StyleProfileDTO.self, from: $0.profileJSON)) != nil })
+              manifest.styleProfiles.allSatisfy({ (try? JSONDecoder().decode(StyleProfileDTO.self, from: $0.profileJSON)) != nil }),
+              (manifest.shoppingProfiles ?? []).allSatisfy({ (try? JSONDecoder().decode(ShoppingProfileDTO.self, from: $0.profileJSON)) != nil })
         else { throw BackupError.invalidPackage("The backup contains invalid wardrobe records.") }
 
         var applied = 0
@@ -278,6 +286,12 @@ enum BackupService {
             if item.modelContext == nil { item.id = record.id; context.insert(item) }
             item.signature = record.signature; item.revision = record.revision; item.profileJSON = record.profileJSON; item.updatedAt = record.updatedAt; applied += 1
         }
+        for record in manifest.shoppingProfiles ?? [] {
+            let preferences = try JSONDecoder().decode(ShoppingProfileDTO.self, from: record.profileJSON)
+            let item = try fetch(id: record.id, from: context) ?? ShoppingProfile(id: record.id, preferences: preferences, updatedAt: record.updatedAt)
+            if item.modelContext == nil { context.insert(item) }
+            item.profileJSON = record.profileJSON; item.updatedAt = record.updatedAt; applied += 1
+        }
 
         let existingBlobs = try context.fetch(FetchDescriptor<AssetBlob>())
         let grouped = Dictionary(grouping: existingBlobs, by: \.name)
@@ -315,6 +329,7 @@ enum BackupService {
         if T.self == ReferencePhoto.self { return try fetchReference(id, context) as? T }
         if T.self == InspirationLook.self { return try fetchInspiration(id, context) as? T }
         if T.self == StyleProfile.self { return try fetchProfile(id, context) as? T }
+        if T.self == ShoppingProfile.self { return try fetchShoppingProfile(id, context) as? T }
         return nil
     }
 
@@ -325,6 +340,7 @@ enum BackupService {
     private static func fetchReference(_ id: UUID, _ context: ModelContext) throws -> ReferencePhoto? { var d = FetchDescriptor<ReferencePhoto>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchInspiration(_ id: UUID, _ context: ModelContext) throws -> InspirationLook? { var d = FetchDescriptor<InspirationLook>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchProfile(_ id: UUID, _ context: ModelContext) throws -> StyleProfile? { var d = FetchDescriptor<StyleProfile>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
+    private static func fetchShoppingProfile(_ id: UUID, _ context: ModelContext) throws -> ShoppingProfile? { var d = FetchDescriptor<ShoppingProfile>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
 }
 
 private extension JSONEncoder {

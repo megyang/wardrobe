@@ -7,20 +7,35 @@ struct WishlistView: View {
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
+    @Query private var garments: [Garment]
+    @Query private var styleProfiles: [StyleProfile]
+    @Query(sort: \ShoppingProfile.updatedAt, order: .reverse) private var shoppingProfiles: [ShoppingProfile]
+    @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var feedSnapshots: [ShopFeedSnapshot]
     @State private var photo: PhotosPickerItem?
     @State private var url = ""
     @State private var working = false
     @State private var error: String?
     @State private var selectedItem: WishlistItem?
     @State private var showResult = false
+    @State private var shopQuery = ""
+    @State private var shopWorking = false
+    @State private var shopError: String?
+    @State private var showShoppingPreferences = false
+    @State private var didAutoRefresh = false
+
+    private var shoppingProfile: ShoppingProfile? { shoppingProfiles.first }
+    private var activeFeed: ShopFeedSnapshot? { feedSnapshots.first { ["queued", "processing"].contains($0.state) } }
+    private var latestFeed: ShopFeedSnapshot? { feedSnapshots.first { $0.state == "complete" } }
 
     var body: some View {
         ZStack {
             WearwellTheme.cream.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 20) {
-                    EditorialHeader(eyebrow: "Shop your wardrobe first", title: "Should I buy this?", subtitle: "Upload a possible purchase and Luna will build outfits with clothes you already own.")
+                    EditorialHeader(eyebrow: "Shop your wardrobe first", title: "Shop", subtitle: "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe.")
                     VStack(alignment: .leading, spacing: 14) {
+                        Text("Should I buy this?").font(.title3.bold())
+                        Text("Submit any product, then build outfits with clothes you already own.").font(.subheadline).foregroundStyle(.secondary)
                         PhotosPicker(selection: $photo, matching: .images) {
                             Label("Choose product image", systemImage: "photo.badge.plus").frame(maxWidth: .infinity)
                         }
@@ -55,14 +70,75 @@ struct WishlistView: View {
                     }
                     if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
 
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Find something for me").font(.title3.bold())
+                                Text("Searches only stores in your shopping profile.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button { showShoppingPreferences = true } label: { Image(systemName: "slider.horizontal.3") }
+                                .accessibilityLabel("Shopping preferences")
+                        }
+                        TextField("e.g. a sheer layering top under $70", text: $shopQuery, axis: .vertical)
+                            .lineLimit(1...3)
+                            .submitLabel(.search)
+                            .onSubmit { Task { await startShopSearch() } }
+                            .padding(12)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                        HStack {
+                            Button { Task { await startShopSearch() } } label: {
+                                Label(shopWorking ? "Searching…" : "Search stores", systemImage: "magnifyingglass")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(shopWorking || companion.status != .available || shoppingProfile == nil)
+                            Button { Task { await startShopSearch(forcePersonalized: true) } } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(shopWorking || companion.status != .available || shoppingProfile == nil)
+                            .accessibilityLabel("Refresh personalized picks")
+                        }
+                        if shopWorking || activeFeed != nil {
+                            ProgressView(activeFeed?.stageText ?? "Searching and verifying product pages…")
+                            Text("The paired Mac keeps working if you leave this screen.").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let shopError { Text(shopError).font(.caption).foregroundStyle(.red) }
+                    }
+                    .padding(20)
+                    .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+
+                    if let feed = latestFeed {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(feed.query.isEmpty ? "Personalized picks" : feed.query).font(.title2.bold()).lineLimit(2)
+                            Spacer()
+                            Text(feed.generatedAt, style: .relative).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if feed.expiresAt <= .now {
+                            Text("Showing the last successful search while a fresh one is prepared.").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        LazyVStack(spacing: 14) {
+                            ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }) { product in
+                                ShopProductCard(product: product, test: { Task { await test(product) } }, dismiss: { dismiss(product, from: feed) })
+                            }
+                        }
+                    } else if !shopWorking && activeFeed == nil {
+                        EmptyState(icon: "bag.badge.plus", title: "No shop picks yet", message: "Pair the Mac and search for a piece, or refresh for recommendations based on your style profile.")
+                            .frame(minHeight: 180)
+                    }
+
                     if !candidates.isEmpty {
                         Text("Previous purchase tests").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                         ForEach(candidates) { item in NavigationLink { WishlistDetailView(item: item) } label: { WishlistRow(item: item) }.buttonStyle(.plain) }
                     }
                 }.padding()
             }
+            .refreshable { await startShopSearch(forcePersonalized: true) }
         }
         .toolbar { SettingsButton(isPresented: $showSettings) }
+        .sheet(isPresented: $showShoppingPreferences) {
+            if let shoppingProfile { NavigationStack { ShoppingPreferencesView(profile: shoppingProfile) } }
+        }
         .onChange(of: photo) { _, item in
             guard let item else { return }
             Task {
@@ -76,6 +152,20 @@ struct WishlistView: View {
         }
         .navigationDestination(isPresented: $showResult) {
             if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: true) }
+        }
+        .task {
+            let profile = ensureShoppingProfile()
+            guard !didAutoRefresh else { return }
+            didAutoRefresh = true
+            if activeFeed == nil, latestFeed?.isFresh != true, companion.status == .available {
+                await startShopSearch(forcePersonalized: true, profileOverride: profile)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await refreshShopJob()
+                try? await Task.sleep(for: .seconds(activeFeed == nil ? 15 : 3))
+            }
         }
     }
 
@@ -97,7 +187,7 @@ struct WishlistView: View {
         working = false
     }
 
-    private func create(from data: Data, sourceURL: String?, managesWorkingState: Bool = true) async {
+    private func create(from data: Data, sourceURL: String?, discovery: DiscoveredProductDTO? = nil, managesWorkingState: Bool = true) async {
         guard companion.status == .available else { error = "Pair the Mac companion first."; return }
         if managesWorkingState { working = true }
         error = nil
@@ -110,12 +200,20 @@ struct WishlistView: View {
             let catalog = try await AssetStore.shared.save(catalogData, preferredExtension: "png")
             let category = GarmentCategory(rawValue: analysis.category) ?? .tops
             let subcategory = analysis.subcategory.flatMap(GarmentSubcategory.init(rawValue:))
+            var details = analysis.description
+            if let discovery {
+                let price = discovery.currentPrice.map { value in
+                    let amount = value.formatted(.currency(code: discovery.currency ?? "USD"))
+                    return discovery.originalPrice.map { "\(amount), originally \($0.formatted(.currency(code: discovery.currency ?? "USD")))" } ?? amount
+                } ?? "Price unavailable"
+                details += "\n\nDiscovered at \(discovery.retailer). \(price). Verified \(discovery.verifiedAt). Recommendation: \(discovery.rationale)"
+            }
             let item = WishlistItem(
                 label: analysis.label,
                 category: category,
                 subcategory: subcategory?.category == category ? subcategory : nil,
                 color: analysis.color,
-                details: analysis.description,
+                details: details,
                 sourceAssetName: source,
                 catalogAssetName: catalog,
                 sourceURL: sourceURL,
@@ -130,6 +228,80 @@ struct WishlistView: View {
         }
         if managesWorkingState { working = false }
     }
+
+    @MainActor private func ensureShoppingProfile() -> ShoppingProfile {
+        if let shoppingProfile { return shoppingProfile }
+        let profile = ShoppingProfile()
+        context.insert(profile)
+        try? context.save()
+        return profile
+    }
+
+    private func startShopSearch(forcePersonalized: Bool = false, profileOverride: ShoppingProfile? = nil) async {
+        guard activeFeed == nil, let shoppingProfile = profileOverride ?? shoppingProfile, companion.status == .available else { return }
+        let query = forcePersonalized || shopQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Personalized pieces that add value to my wardrobe, prioritizing useful verified markdowns"
+            : shopQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        shopWorking = true; shopError = nil
+        let snapshot = ShopFeedSnapshot(query: query)
+        context.insert(snapshot); try? context.save()
+        do {
+            let job = try await companion.submitShopDiscovery(query: query, garments: garments, styleProfile: styleProfiles.first, shoppingProfile: shoppingProfile.preferences)
+            snapshot.jobID = job.id; snapshot.state = job.state
+            try context.save()
+        } catch {
+            snapshot.state = "failed"; snapshot.errorMessage = error.localizedDescription
+            shopError = error.localizedDescription; try? context.save()
+        }
+        shopWorking = false
+    }
+
+    private func refreshShopJob() async {
+        guard companion.status == .available, let snapshot = activeFeed, let id = snapshot.jobID else { return }
+        do {
+            let job = try await companion.shopDiscoveryJob(id: id)
+            snapshot.state = job.state; snapshot.errorMessage = job.error
+            if let feed = job.result {
+                let dismissed = shoppingProfile?.preferences.dismissedProductIDs ?? []
+                snapshot.query = feed.query
+                snapshot.products = feed.products.filter { !dismissed.contains($0.id) }
+                snapshot.generatedAt = ISO8601DateFormatter().date(from: feed.generatedAt) ?? .now
+                snapshot.expiresAt = snapshot.generatedAt.addingTimeInterval(6 * 60 * 60)
+                snapshot.state = "complete"
+                for old in feedSnapshots.dropFirst(8) { context.delete(old) }
+            } else if job.state == "failed" {
+                shopError = job.error ?? "Product discovery failed. Your last successful picks are still available."
+            }
+            try context.save()
+        } catch ClientError.jobNotFound {
+            snapshot.state = "failed"; snapshot.errorMessage = "This product search expired. Refresh to try again."
+            shopError = snapshot.errorMessage; try? context.save()
+        } catch { /* keep the local job active while the Mac is temporarily unavailable */ }
+    }
+
+    private func dismiss(_ product: DiscoveredProductDTO, from feed: ShopFeedSnapshot) {
+        var ids = feed.dismissedIDs; ids.insert(product.id); feed.dismissedIDs = ids
+        if let shoppingProfile {
+            var preferences = shoppingProfile.preferences
+            if !preferences.dismissedProductIDs.contains(product.id) { preferences.dismissedProductIDs.append(product.id) }
+            preferences.dismissedProductIDs = Array(preferences.dismissedProductIDs.suffix(300))
+            shoppingProfile.preferences = preferences
+        }
+        try? context.save()
+    }
+
+    private func test(_ product: DiscoveredProductDTO) async {
+        working = true; error = nil
+        do {
+            let image = try await ImportService.image(from: product.imageURL).0
+            await create(from: image, sourceURL: product.canonicalURL, discovery: product, managesWorkingState: false)
+        } catch { self.error = error.localizedDescription }
+        working = false
+    }
+}
+
+private extension ShopFeedSnapshot {
+    var stageText: String { state == "queued" ? "Queued product search…" : "Searching and verifying product pages…" }
 }
 
 private struct WishlistRow: View {

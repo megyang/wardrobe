@@ -1,16 +1,17 @@
 # Wearwell
 
-Wearwell is a private, native iPhone wardrobe with three outfit workflows:
+Wearwell is a private, native iPhone wardrobe with four outfit workflows:
 
 - **Manual Collage** works entirely offline.
 - **AI Style** is text-only: it selects confirmed garment IDs, then opens those
   pieces in the manual collage editor with a deterministic low-overlap layout.
-- **Should I Buy This?** tests a wishlist candidate against clothes you own.
+- **Shop** combines “Should I Buy This?”, personalized product discovery, and
+  verified retailer markdowns.
 
-The iOS app stores the wardrobe and every editable collage locally and mirrors
-durable records and images to the user's private iCloud database. Reinstalling
-on a device signed into the same iCloud account restores the library. Settings
-also supports versioned `.wearwellbackup` export and non-destructive restore.
+The iOS app stores the wardrobe, shopping profile, purchase tests, and every
+editable collage locally. Settings supports versioned `.wearwellbackup` export
+and non-destructive restore; Shop feed snapshots are disposable cache and are
+not included in backups.
 AI actions are sent
 to the paired Mac companion, which reuses the Mac's existing `codex login` and
 pins `gpt-5.6-luna`; it never embeds an OpenAI API key.
@@ -28,23 +29,6 @@ Command-line verification:
 xcodebuild -project Wearwell.xcodeproj -scheme Wearwell \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
-
-## Configure iCloud storage
-
-The project expects the private CloudKit container `iCloud.com.wearwell.app`.
-Before running a signed build, the Apple Developer team administrator must add
-that container to the `com.wearwell.app` App ID and refresh its provisioning
-profile. The checked-in entitlements already enable CloudKit and push delivery.
-
-Run a Debug build once with an iCloud test account and add a sample item so
-SwiftData initializes the development schema. Verify its record types in
-CloudKit Console, then deploy the development schema to production before an
-App Store or TestFlight release. Production CloudKit schemas are additive, so
-future model changes must add a new `VersionedSchema` and migration stage.
-
-On first launch after upgrading, Wearwell scans the existing `WearwellAssets`
-directory and creates cloud-backed blobs without deleting the legacy files.
-Migration status and iCloud account availability appear in Settings.
 
 ## Run the Mac companion
 
@@ -65,6 +49,16 @@ The companion uses HTTPS with a generated local certificate. Wearwell pins the
 certificate and stores its device token in the iPhone Keychain, limits uploads,
 and deletes job uploads after each request. The Mac must be awake and reachable
 for AI actions.
+
+Shop discovery also runs on the paired Mac using its ChatGPT-backed Codex login.
+It searches only the retailer domains selected in the local shopping profile,
+starting with Aritzia, Uniqlo, Hollister, Canton Collective, and Codibook. The
+search turn runs in an isolated temporary directory with live web access. The
+companion then independently validates public HTTPS destinations, bounded
+responses, product metadata, canonical URLs, images, and retailer-supplied
+prices. A second network-disabled multimodal turn ranks verified candidates
+against the local style profile and wardrobe summary. Successful feeds remain
+available for six hours and the last successful feed survives refresh failures.
 
 Clothing imports are durable background jobs. Wait until an import displays
 **Queued — safe to lock**, then the iPhone can be locked or used for something
