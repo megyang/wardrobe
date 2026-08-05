@@ -116,7 +116,7 @@ private struct OutfitGalleryCard: View {
 }
 
 struct AIStyleView: View {
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
@@ -166,11 +166,11 @@ struct AIStyleView: View {
             }
             Section {
                 Button { Task { await generate() } } label: { HStack { Spacer(); if working { ProgressView() } else { Label("Recommend outfits", systemImage: "sparkles") }; Spacer() } }
-                    .disabled(garments.count < 2 || working || activeGeneration != nil || companion.status != .available)
+                    .disabled(garments.count < 2 || working || activeGeneration != nil || hosted.status != .available)
                 if let generation = activeGeneration {
                     DurableGenerationProgress(stage: generation.stage, estimatedSecondsRemaining: generation.estimatedSecondsRemaining)
                 }
-                if companion.status != .available { Text("Pair with the Mac companion in Settings to use Luna. Manual collage remains available.").font(.caption).foregroundStyle(.secondary) }
+                if hosted.status != .available { Text("Sign in to hosted Wearwell in Settings to use Luna. Manual collage remains available.").font(.caption).foregroundStyle(.secondary) }
                 if let error { Text(error).foregroundStyle(.red) }
             }
             if !suggestions.isEmpty {
@@ -217,7 +217,7 @@ struct AIStyleView: View {
                 .prefix(6)
                 .flatMap(\.suggestions)
             let savedExamples = savedLibraryOutfits.compactMap(SavedOutfitExampleDTO.init)
-            let job = try await companion.submitStyle(
+            let job = try await hosted.submitStyle(
                 garments: garments, occasion: occasion, weather: weather, mood: mood,
                 anchorID: anchorID, request: request, styleProfile: styleProfiles.first,
                 inspirations: inspirations, recentOutfits: recentOutfits,
@@ -239,19 +239,19 @@ struct AIStyleView: View {
     }
 
     private func refreshGenerations() async {
-        guard companion.status == .available else { return }
+        guard hosted.status == .available else { return }
         for generation in generations where ["queued", "processing"].contains(generation.state) {
             guard let id = generation.remoteJobID else { continue }
             do {
-                let job = try await companion.styleJob(id: id)
+                let job = try await hosted.styleJob(id: id)
                 apply(job, to: generation)
                 try context.save()
-            } catch ClientError.jobNotFound {
+            } catch HostedError.jobNotFound {
                 generation.state = "failed"
                 generation.errorMessage = "This outfit request expired. Generate it again."
                 generation.updatedAt = .now
                 try? context.save()
-            } catch { /* keep the durable job pending while the phone or Mac is temporarily unreachable */ }
+            } catch { /* keep the durable job pending while the phone or service is temporarily unreachable */ }
         }
     }
 
@@ -327,7 +327,7 @@ private struct DurableGenerationProgress: View {
                 Text("Estimated time remaining: about \(max(1, Int(ceil(Double(estimatedSecondsRemaining) / 60)))) min")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Text("You can lock your phone or leave the app; the Mac companion will keep working.")
+            Text("You can lock your phone or leave the app; the hosted service will keep working.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -339,7 +339,7 @@ struct OutfitDetailView: View {
     @Query private var candidates: [WishlistItem]
     @Query private var references: [ReferencePhoto]
     @Query private var visualizations: [Visualization]
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var personPicker: PhotosPickerItem?
@@ -384,7 +384,7 @@ struct OutfitDetailView: View {
                 Text("Visualize").font(.title2.bold())
                 HStack {
                     visualizationButton(.mannequin)
-                    PhotosPicker(selection: $personPicker, matching: .images) { Label("On me", systemImage: "person.crop.rectangle") }.buttonStyle(.bordered).disabled(workingMode != nil || companion.status != .available)
+                    PhotosPicker(selection: $personPicker, matching: .images) { Label("On me", systemImage: "person.crop.rectangle") }.buttonStyle(.bordered).disabled(workingMode != nil || hosted.status != .available)
                 }
                 Text("AI visualizations are approximate and do not prove fit, drape, opacity, sizing, or garment accuracy.").font(.caption).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
@@ -398,7 +398,7 @@ struct OutfitDetailView: View {
     }
 
     private func visualizationButton(_ mode: VisualizationMode) -> some View {
-        Button { Task { guard let url = Bundle.main.url(forResource: "mannequin-reference", withExtension: "png"), let data = try? Data(contentsOf: url) else { return }; await render(mode: mode, reference: data) } } label: { Label(workingMode == mode ? "Working…" : mode.title, systemImage: "figure.stand") }.buttonStyle(.bordered).disabled(workingMode != nil || companion.status != .available)
+        Button { Task { guard let url = Bundle.main.url(forResource: "mannequin-reference", withExtension: "png"), let data = try? Data(contentsOf: url) else { return }; await render(mode: mode, reference: data) } } label: { Label(workingMode == mode ? "Working…" : mode.title, systemImage: "figure.stand") }.buttonStyle(.bordered).disabled(workingMode != nil || hosted.status != .available)
     }
     private func render(mode: VisualizationMode, reference: Data) async {
         workingMode = mode; error = nil
@@ -410,7 +410,7 @@ struct OutfitDetailView: View {
             }
             var data: [Data] = []
             for name in names { if let value = try? await AssetStore.shared.data(named: name) { data.append(value) } }
-            let image = try await companion.render(mode: mode, reference: reference, garmentImages: data)
+            let image = try await hosted.render(mode: mode, reference: reference, garmentImages: data)
             let name = try await AssetStore.shared.save(image, preferredExtension: "png")
             context.insert(Visualization(outfitID: outfit.id, mode: mode, assetName: name)); try context.save()
         } catch { self.error = error.localizedDescription }

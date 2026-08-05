@@ -23,7 +23,7 @@ test("AI style cannot contain an unknown ID", () => {
   assert.equal(suggested.every(id => owned.has(id)), false);
 });
 
-test("outfit response schema uses only Codex-supported array constraints", () => {
+test("outfit response schema uses Responses-supported array constraints", () => {
   const schema = outfitSchema(["owned-1", "owned-2"], 3, 3);
   const garmentIDs = schema.properties.outfits.items.properties.garmentIDs;
 
@@ -168,7 +168,7 @@ test("catalog edits are narrowly scoped and retain transparency", () => {
   assert.match(prompt, /remove the loose thread at the hem/i);
 });
 
-test("a hung Codex turn times out instead of blocking every import", async () => {
+test("a hung model request times out instead of blocking every import", async () => {
   await assert.rejects(
     withAbortTimeout(5, "analysis timed out", signal => new Promise((_, reject) => {
       signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });

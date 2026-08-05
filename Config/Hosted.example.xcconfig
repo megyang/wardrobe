@@ -1,0 +1,6 @@
+// Copy these values into an untracked Config/Hosted.local.xcconfig or set them
+// in Xcode/CI. The anon key is public by design; never put the service-role or
+// OpenAI key in an iOS build.
+WEARWELL_API_BASE_URL_PRODUCTION = https://api.example.com
+WEARWELL_SUPABASE_URL_PRODUCTION = https://example.supabase.co
+WEARWELL_SUPABASE_ANON_KEY_PRODUCTION = replace-with-public-anon-key

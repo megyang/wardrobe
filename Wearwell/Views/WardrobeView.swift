@@ -99,7 +99,7 @@ struct GarmentDetailView: View {
     @Bindable var garment: Garment
     @Query(sort: \Outfit.updatedAt, order: .reverse) private var outfits: [Outfit]
     @Query private var garments: [Garment]
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDelete = false
@@ -245,7 +245,7 @@ struct GarmentDetailView: View {
                     await AssetStore.shared.remove(named: garment.catalogAssetName)
                     if let pending = garment.pendingRegenerationSourceAssetName { await AssetStore.shared.remove(named: pending) }
                     if let pending = garment.pendingRegenerationCatalogAssetName { await AssetStore.shared.remove(named: pending) }
-                    if let jobID = garment.imageRegenerationJobID { await companion.deleteAnalysisJob(id: jobID) }
+                    if let jobID = garment.imageRegenerationJobID { await hosted.deleteAnalysisJob(id: jobID) }
                 }
                 context.delete(garment); try? context.save(); dismiss()
             }
@@ -255,20 +255,20 @@ struct GarmentDetailView: View {
     private func monitorImageRegeneration() async {
         guard let jobID = garment.imageRegenerationJobID else { return }
         while !Task.isCancelled, garment.imageRegenerationJobID == jobID {
-            guard companion.status == .available else {
-                garment.imageRegenerationStage = "Waiting for the Mac companion"
+            guard hosted.status == .available else {
+                garment.imageRegenerationStage = "Waiting for the hosted service"
                 try? context.save()
                 try? await Task.sleep(for: .seconds(5))
                 continue
             }
             do {
-                let job = try await companion.analysisJob(id: jobID)
+                let job = try await hosted.analysisJob(id: jobID)
                 garment.imageRegenerationState = job.state
                 garment.imageRegenerationStage = job.stage ?? (job.state == "queued" ? "Waiting to regenerate" : "Regenerating image")
                 try? context.save()
                 if job.state == "complete" {
                     try await installRegeneratedImage(from: job)
-                    await companion.deleteAnalysisJob(id: jobID)
+                    await hosted.deleteAnalysisJob(id: jobID)
                     return
                 }
                 if job.state == "failed" { throw RegenerationError.failed(job.error ?? "The image could not be regenerated.") }
@@ -278,7 +278,7 @@ struct GarmentDetailView: View {
             } catch let regenerationError as RegenerationError {
                 await failRegeneration(regenerationError.localizedDescription, jobID: jobID)
                 return
-            } catch ClientError.jobNotFound {
+            } catch HostedError.jobNotFound {
                 await failRegeneration("The regeneration job expired. Your current image was not changed.", jobID: jobID)
                 return
             } catch {
@@ -335,7 +335,7 @@ struct GarmentDetailView: View {
         garment.imageRegenerationStage = nil
         garment.imageRegenerationError = message
         try? context.save()
-        await companion.deleteAnalysisJob(id: jobID)
+        await hosted.deleteAnalysisJob(id: jobID)
     }
 
     private func discardRegeneratedImage() async {
@@ -389,7 +389,7 @@ struct GarmentDetailView: View {
 private struct GarmentImageRegenerationSheet: View {
     @Bindable var garment: Garment
 
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -425,9 +425,9 @@ private struct GarmentImageRegenerationSheet: View {
                         Label("Choose new photos", systemImage: "photo.badge.plus").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(companion.status != .available)
-                    if companion.status != .available {
-                        Text("Connect to the Mac companion before regenerating this image.")
+                    .disabled(hosted.status != .available)
+                    if hosted.status != .available {
+                        Text("Connect to the hosted service before regenerating this image.")
                             .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
                 }
@@ -471,14 +471,14 @@ private struct GarmentImageRegenerationSheet: View {
     }
 
     private func regenerate(using photos: [StagedImportPhoto]) async {
-        guard !photos.isEmpty, companion.status == .available else { return }
+        guard !photos.isEmpty, hosted.status == .available else { return }
         processing = true; error = nil; stage = "Uploading new views"
         defer { processing = false }
 
         var pendingSourceName: String?
         do {
             pendingSourceName = try await AssetStore.shared.save(photos[0].data, preferredExtension: "jpg")
-            let job = try await companion.submitAnalysis(imageData: photos.map(\.data), sameItem: true)
+            let job = try await hosted.submitAnalysis(imageData: photos.map(\.data), sameItem: true)
             garment.pendingRegenerationSourceAssetName = pendingSourceName
             garment.imageRegenerationJobID = job.id
             garment.imageRegenerationState = job.state

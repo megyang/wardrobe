@@ -4,8 +4,7 @@ import SwiftUI
 struct RootTabView: View {
     private static let importTimeout: TimeInterval = 24 * 60 * 60
 
-    @EnvironmentObject private var companion: CompanionClient
-    @EnvironmentObject private var macBackups: MacBackupController
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
     @Query private var importDrafts: [ImportDraft]
@@ -35,7 +34,11 @@ struct RootTabView: View {
         }
         .background(WearwellTheme.cream)
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() }.keyboardDismissToolbar() }
-        .task { await expireOverdueImports() }
+        .task {
+            await expireOverdueImports()
+            await hosted.refreshStatus()
+            try? await hosted.synchronizeCache(context: context)
+        }
         .task {
             while !Task.isCancelled {
                 await refreshPurchaseAssessments()
@@ -45,21 +48,14 @@ struct RootTabView: View {
                 try? await Task.sleep(for: .seconds(hasActiveAssessment ? 3 : 30))
             }
         }
-        .task {
-            while !Task.isCancelled {
-                await macBackups.backupIfDue(context: context, companion: companion)
-                try? await Task.sleep(for: .seconds(60 * 60))
-            }
-        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task {
                     await expireOverdueImports()
                     await refreshPurchaseAssessments()
-                    await macBackups.backupIfDue(context: context, companion: companion)
+                    await hosted.refreshStatus()
+                    try? await hosted.synchronizeCache(context: context)
                 }
-            } else if phase == .background {
-                Task { await macBackups.backupIfDue(context: context, companion: companion) }
             }
         }
     }
@@ -68,7 +64,7 @@ struct RootTabView: View {
         for draft in importDrafts where
             ["submitting", "queued", "processing"].contains(draft.state) &&
             now.timeIntervalSince(draft.createdAt) >= Self.importTimeout {
-            if let id = draft.remoteJobID { await companion.deleteAnalysisJob(id: id) }
+            if let id = draft.remoteJobID { await hosted.deleteAnalysisJob(id: id) }
             draft.state = "failed"
             draft.remoteJobID = nil
             draft.progressStage = "Import unavailable"
@@ -81,22 +77,22 @@ struct RootTabView: View {
     }
 
     private func refreshPurchaseAssessments() async {
-        guard companion.isPaired else { return }
+        guard hosted.isAuthenticated else { return }
         var changed = false
         for item in wishlistItems {
             guard let state = item.assessmentState,
                   ["queued", "processing"].contains(state),
                   let id = item.assessmentJobID else { continue }
             do {
-                let job = try await companion.assessmentJob(id: id)
+                let job = try await hosted.assessmentJob(id: id)
                 PurchaseAssessmentResults.apply(job, to: item, garments: garments, outfits: outfits, context: context)
                 changed = true
-            } catch ClientError.jobNotFound {
+            } catch HostedError.jobNotFound {
                 item.assessmentState = "failed"
                 item.assessmentError = "This purchase test expired. Generate it again."
                 changed = true
             } catch {
-                // The Mac keeps processing; foreground activation retries automatically.
+                // The hosted worker keeps processing; foreground activation retries automatically.
             }
         }
         if changed { try? context.save() }

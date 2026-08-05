@@ -308,9 +308,7 @@
 				INFOPLIST_FILE = Wearwell/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Wearwell;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
-				INFOPLIST_KEY_NSBonjourServices = _wearwell._tcp;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wearwell uses the camera only when you choose to photograph clothing.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Wearwell connects to your paired Mac companion for optional AI styling.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Wearwell imports only the clothing photos you select.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -329,6 +327,9 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
+				WEARWELL_API_BASE_URL = "http://127.0.0.1:8791";
+				WEARWELL_SUPABASE_ANON_KEY = "local-development-anon-key";
+				WEARWELL_SUPABASE_URL = "http://127.0.0.1:54321";
 			};
 			name = Debug;
 		};
@@ -343,9 +344,7 @@
 				INFOPLIST_FILE = Wearwell/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Wearwell;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
-				INFOPLIST_KEY_NSBonjourServices = _wearwell._tcp;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Wearwell uses the camera only when you choose to photograph clothing.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Wearwell connects to your paired Mac companion for optional AI styling.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Wearwell imports only the clothing photos you select.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -365,6 +364,9 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				VALIDATE_PRODUCT = YES;
+				WEARWELL_API_BASE_URL = "$(WEARWELL_API_BASE_URL_PRODUCTION)";
+				WEARWELL_SUPABASE_ANON_KEY = "$(WEARWELL_SUPABASE_ANON_KEY_PRODUCTION)";
+				WEARWELL_SUPABASE_URL = "$(WEARWELL_SUPABASE_URL_PRODUCTION)";
 			};
 			name = Release;
 		};

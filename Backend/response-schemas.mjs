@@ -3,7 +3,7 @@ export function outfitSchema(validIDs, min = 3, max = 5, layeringIDs = validIDs)
     outfits: { type: "array", minItems: min, maxItems: max, items: {
       type: "object", additionalProperties: false, required: ["title", "rationale", "garmentIDs", "layering"], properties: {
         title: { type: "string" }, rationale: { type: "string" },
-        // Codex structured outputs do not accept JSON Schema's `uniqueItems`.
+        // Responses API strict structured outputs do not accept JSON Schema's `uniqueItems`.
         // Duplicate IDs are rejected after decoding instead.
         garmentIDs: { type: "array", minItems: 2, maxItems: 5, items: { type: "string", enum: validIDs } },
         layering: { type: "array", maxItems: 2, items: {

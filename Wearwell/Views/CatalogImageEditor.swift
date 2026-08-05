@@ -5,7 +5,7 @@ struct CatalogImageEditor: View {
     @Binding private var imageData: Data?
     let sourceData: Data
 
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.dismiss) private var dismiss
     @State private var workingData: Data
     @State private var originalData: Data
@@ -61,7 +61,7 @@ struct CatalogImageEditor: View {
                             HStack { Spacer(); if applyingEdit { ProgressView() } else { Label("Apply text edit", systemImage: "sparkles") }; Spacer() }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || applyingEdit || companion.status != .available)
+                        .disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || applyingEdit || hosted.status != .available)
                         if let job = editJob, applyingEdit {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(job.stage ?? "Sending edit…").font(.caption.weight(.semibold))
@@ -73,12 +73,12 @@ struct CatalogImageEditor: View {
                                 } else {
                                     Text("Estimating time remaining…").font(.caption2).foregroundStyle(.secondary)
                                 }
-                                Text("You can close this editor or lock your phone; your Mac will keep working.")
+                                Text("You can close this editor or lock your phone; the hosted worker will keep working.")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
-                        if companion.status != .available {
-                            Text("Pair with the Mac companion to use text edits. The eraser works offline.").font(.caption).foregroundStyle(.secondary)
+                        if hosted.status != .available {
+                            Text("Sign in to hosted Wearwell to use text edits. The eraser works offline.").font(.caption).foregroundStyle(.secondary)
                         }
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }
                         Text("AI edits are approximate. Review the result before saving.").font(.caption).foregroundStyle(.secondary)
@@ -147,22 +147,22 @@ struct CatalogImageEditor: View {
             let requestedEdit = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
             let edited: Data
             do {
-                var job = try await companion.submitCatalogEdit(imageData: current, instruction: requestedEdit)
+                var job = try await hosted.submitCatalogEdit(imageData: current, instruction: requestedEdit)
                 editJob = job
                 while ["queued", "processing"].contains(job.state) {
                     try await Task.sleep(for: .seconds(2))
-                    job = try await companion.catalogEditJob(id: job.id)
+                    job = try await hosted.catalogEditJob(id: job.id)
                     editJob = job
                 }
                 guard job.state == "complete", let encoded = job.result?.imageBase64, let result = Data(base64Encoded: encoded) else {
                     throw CatalogEditError.failed(job.error ?? "The edit could not be completed.")
                 }
                 edited = result
-            } catch ClientError.jobNotFound {
-                // Older companion builds expose the direct edit endpoint but not
+            } catch HostedError.jobNotFound {
+                // Older hosted builds expose the direct edit endpoint but not
                 // durable catalog-edit jobs. Keep edits working until it restarts.
                 editJob = nil
-                edited = try await companion.editCatalog(imageData: current, instruction: requestedEdit)
+                edited = try await hosted.editCatalog(imageData: current, instruction: requestedEdit)
             }
             let cutout = await Task.detached(priority: .userInitiated) {
                 guard let image = UIImage(data: edited) else { return edited }

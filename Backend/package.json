@@ -1,5 +1,5 @@
 {
-  "name": "wearwell-companion",
+  "name": "wearwell-backend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,13 +8,15 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "worker": "node worker.mjs",
     "check": "node --check server.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@openai/codex-sdk": "^0.144.1",
-    "bonjour-service": "^1.3.0",
-    "selfsigned": "^3.0.1",
+    "@supabase/supabase-js": "^2.55.0",
+    "jose": "^6.0.12",
+    "openai": "^5.12.2",
+    "pg": "^8.16.3",
     "sharp": "^0.35.3"
   }
 }

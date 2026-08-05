@@ -4,7 +4,7 @@ import SwiftUI
 
 struct InspirationView: View {
     @Binding var showSettings: Bool
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Query(sort: \InspirationLook.createdAt, order: .reverse) private var looks: [InspirationLook]
     @Query private var profiles: [StyleProfile]
@@ -35,10 +35,10 @@ struct InspirationView: View {
                         }
                         .padding(16).foregroundStyle(.white).background(WearwellTheme.sage, in: RoundedRectangle(cornerRadius: 16))
                     }
-                    .disabled(importing || companion.status != .available)
+                    .disabled(importing || hosted.status != .available)
 
-                    if companion.status != .available {
-                        Text("Pair with the Mac companion to analyze new looks. Saved preferences remain available offline.")
+                    if hosted.status != .available {
+                        Text("Sign in to hosted Wearwell to analyze new looks. Saved preferences remain available offline.")
                             .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading) }
@@ -53,7 +53,7 @@ struct InspirationView: View {
                         .padding(14)
                         .foregroundStyle(WearwellTheme.sage)
                         .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
-                        .disabled(importing || companion.status != .available)
+                        .disabled(importing || hosted.status != .available)
                     }
 
                     if let profile = profiles.first?.profile {
@@ -98,7 +98,7 @@ struct InspirationView: View {
                 .background(WearwellTheme.coral, in: RoundedRectangle(cornerRadius: 16))
                 .padding(.horizontal).padding(.bottom, 6)
                 .background(.ultraThinMaterial)
-                .disabled(importing || companion.status != .available)
+                .disabled(importing || hosted.status != .available)
             }
         }
         .onChange(of: pickerItems) { _, items in
@@ -110,7 +110,7 @@ struct InspirationView: View {
             repairInterruptedLooks()
             await upgradeOutdatedLooksIfPossible()
         }
-        .onChange(of: companion.status) { _, status in
+        .onChange(of: hosted.status) { _, status in
             guard status == .available else { return }
             Task { await upgradeOutdatedLooksIfPossible() }
         }
@@ -126,7 +126,7 @@ struct InspirationView: View {
                         StatusPill(text: "Tap to retry", color: .red)
                     }
                     .buttonStyle(.plain)
-                    .disabled(companion.status != .available)
+                    .disabled(hosted.status != .available)
                 } else {
                     StatusPill(text: statusTitle(look), color: WearwellTheme.sage)
                 }
@@ -144,7 +144,7 @@ struct InspirationView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(WearwellTheme.coral)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(companion.status != .available)
+                    .disabled(hosted.status != .available)
             } else if let analysis = look.analysis {
                 Text(analysis.summary).font(.caption).foregroundStyle(WearwellTheme.muted).lineLimit(4)
             }
@@ -191,7 +191,7 @@ struct InspirationView: View {
         look.state = "analyzing"; look.errorMessage = nil; look.updatedAt = .now; try? context.save()
         do {
             let data = try await AssetStore.shared.data(named: look.assetName)
-            look.analysis = try await companion.analyzeInspiration(imageData: data)
+            look.analysis = try await hosted.analyzeInspiration(imageData: data)
             look.state = "ready"; look.errorMessage = nil; look.updatedAt = .now
             try context.save()
             let currentLooks = looks.contains { $0.id == look.id } ? looks : looks + [look]
@@ -209,7 +209,7 @@ struct InspirationView: View {
     }
 
     private func upgradeOutdatedLooksIfPossible() async {
-        guard !importing, companion.status == .available else { return }
+        guard !importing, hosted.status == .available else { return }
         let outdated = looks.filter { $0.state == "ready" && $0.analysis?.analysisVersion != "2" }
         guard !outdated.isEmpty else { return }
         importing = true; error = nil
@@ -218,7 +218,7 @@ struct InspirationView: View {
     }
 
     private func retryFailedLooks() async {
-        guard !importing, companion.status == .available else { return }
+        guard !importing, hosted.status == .available else { return }
         let failed = looks.filter { $0.state == "failed" }
         guard !failed.isEmpty else { return }
         importing = true; error = nil; retryCompleted = 0; retryTotal = failed.count

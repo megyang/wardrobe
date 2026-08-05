@@ -26,9 +26,9 @@ struct WearwellApp: App {
         catch { fatalError("Unable to create Wearwell store: \(error)") }
     }()
 
-    @StateObject private var companion = CompanionClient()
+    @StateObject private var hosted = HostedClient()
+    @StateObject private var auth = HostedAuthController()
     @StateObject private var protection: DataProtectionController
-    @StateObject private var macBackups = MacBackupController()
 
     init() {
         let value = container
@@ -38,15 +38,16 @@ struct WearwellApp: App {
     var body: some Scene {
         WindowGroup {
             RootTabView()
-                .environmentObject(companion)
+                .environmentObject(hosted)
+                .environmentObject(auth)
                 .environmentObject(protection)
-                .environmentObject(macBackups)
                 .tint(WearwellTheme.sage)
                 .overlay(alignment: .topLeading) { AssetCacheHydrator() }
                 .task {
                     await protection.start()
-                    await companion.refreshStatus()
+                    await hosted.refreshStatus()
                 }
+                .onOpenURL { url in try? auth.handleCallback(url) }
         }
         .modelContainer(container)
     }

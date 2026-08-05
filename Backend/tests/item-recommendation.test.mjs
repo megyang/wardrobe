@@ -11,12 +11,12 @@ const wardrobe = [
 ];
 
 test("broad and precise recommendation targets use the wardrobe taxonomy", () => {
-  assert.deepEqual(recommendationTarget("hats"), { category: "accessories", subcategory: "hat" });
-  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], "accessories").map(item => item.id), ["hat", "tights", "misc"]);
-  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], "coats").map(item => item.id), ["coat"]);
+  assert.deepEqual(recommendationTarget({ category: "accessories", subcategory: "hat" }), { category: "accessories", subcategory: "hat" });
+  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "accessories" }).map(item => item.id), ["hat", "tights", "misc"]);
+  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "outerwear", subcategory: "coat" }).map(item => item.id), ["coat"]);
 });
 
 test("items already present in the collage are excluded", () => {
-  assert.deepEqual(eligibleRecommendationItems(wardrobe, ["bottom"], "bottoms"), []);
-  assert.throws(() => recommendationTarget("shoes"), /Choose accessories/);
+  assert.deepEqual(eligibleRecommendationItems(wardrobe, ["bottom"], { category: "bottoms" }), []);
+  assert.throws(() => recommendationTarget({ category: "shoes", subcategory: "heels" }), /within the selected category/);
 });

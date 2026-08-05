@@ -269,15 +269,6 @@ final class WearwellTests: XCTestCase {
         XCTAssertNil(ImportService.secureURL(from: "ftp://shop.example/item"))
     }
 
-    func testCompanionEndpointRejectsInvalidDiscoveryNamesWithoutCrashing() throws {
-        XCTAssertThrowsError(try CompanionEndpoint.url(host: "Megdy’s Mac", port: 8791))
-        XCTAssertThrowsError(try CompanionEndpoint.url(host: "mac.local", port: 0))
-        XCTAssertEqual(
-            try CompanionEndpoint.url(host: " mac.local\n", port: 8791).absoluteString,
-            "https://mac.local:8791/"
-        )
-    }
-
     func testOpenGraphImageIsUpgradedToHTTPS() {
         let html = #"<meta property="og:image" content="http://cdn.example/coat.jpg">"#
         XCTAssertEqual(ImportService.openGraphImage(in: html, base: URL(string: "https://shop.example/item")!)?.absoluteString, "https://cdn.example/coat.jpg")
@@ -305,6 +296,16 @@ final class WearwellTests: XCTestCase {
         XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.maxiSkirt))
         XCTAssertFalse(GarmentSubcategory.options(for: .bottoms).contains(.skirt))
         XCTAssertEqual(GarmentSubcategory(rawValue: "skirt"), .skirt)
+    }
+
+    func testEveryMainCategoryOffersItsExistingSubcategories() {
+        XCTAssertEqual(GarmentCategory.allCases.map(\.rawValue), ["tops", "bottoms", "outerwear", "dresses", "shoes", "accessories"])
+        XCTAssertTrue(GarmentSubcategory.options(for: .tops).contains(.blouse))
+        XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.pants))
+        XCTAssertTrue(GarmentSubcategory.options(for: .outerwear).contains(.coat))
+        XCTAssertTrue(GarmentSubcategory.options(for: .accessories).contains(.hat))
+        XCTAssertTrue(GarmentSubcategory.options(for: .dresses).isEmpty)
+        XCTAssertTrue(GarmentSubcategory.options(for: .shoes).isEmpty)
     }
 
     func testAlphaCropPreservesAWhiteGarment() {

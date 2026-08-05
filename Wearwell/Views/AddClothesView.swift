@@ -36,7 +36,7 @@ struct AddClothesView: View {
     private static let importTimeout: TimeInterval = 24 * 60 * 60
 
     @Binding var showSettings: Bool
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
     @Query private var garments: [Garment]
@@ -66,7 +66,7 @@ struct AddClothesView: View {
                     if working {
                         VStack(spacing: 8) {
                             ProgressView("Luna is identifying visible clothes…")
-                            Text("Once an import says Queued, you can lock your phone. The Mac will keep working.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            Text("Once an import says Queued, you can lock your phone. The hosted worker will keep working.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.padding()
                     }
                     if !drafts.isEmpty { jobSection }
@@ -304,8 +304,8 @@ struct AddClothesView: View {
             for imageData in data { sources.append(try await AssetStore.shared.save(imageData, preferredExtension: "jpg")) }
             let draft = ImportDraft(sourceAssetName: sources[0], additionalSourceAssetNames: Array(sources.dropFirst()), combinesSourcePhotos: sameItem, sourceURL: sourceURL)
             context.insert(draft); try context.save()
-            if companion.status == .available { await submit(draft) }
-            else { draft.errorMessage = "Waiting for the paired Mac companion."; try? context.save() }
+            if hosted.status == .available { await submit(draft) }
+            else { draft.errorMessage = "Waiting for the hosted service."; try? context.save() }
         } catch {
             for source in sources { await AssetStore.shared.remove(named: source) }
             self.error = error.localizedDescription
@@ -332,7 +332,7 @@ struct AddClothesView: View {
     }
 
     private func submit(_ draft: ImportDraft) async {
-        guard companion.status == .available else { draft.state = "pending"; draft.errorMessage = "Waiting for the paired Mac companion."; try? context.save(); return }
+        guard hosted.status == .available else { draft.state = "pending"; draft.errorMessage = "Waiting for the hosted service."; try? context.save(); return }
         do {
             if draft.state == "failed" || draft.remoteJobID == nil { draft.createdAt = .now }
             let data = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
@@ -344,7 +344,7 @@ struct AddClothesView: View {
                 return values.sorted { $0.0 < $1.0 }.map(\.1)
             }
             draft.errorMessage = nil; draft.state = "submitting"; try context.save()
-            let job = try await companion.submitAnalysis(imageData: data, sourceURL: draft.sourceURL, sameItem: draft.combinesSourcePhotos)
+            let job = try await hosted.submitAnalysis(imageData: data, sourceURL: draft.sourceURL, sameItem: draft.combinesSourcePhotos)
             draft.remoteJobID = job.id; apply(job, to: draft); try context.save()
         } catch {
             draft.state = "pending"; draft.errorMessage = error.localizedDescription; draft.updatedAt = .now; try? context.save()
@@ -354,21 +354,21 @@ struct AddClothesView: View {
     private func refreshDrafts() async {
         for draft in drafts {
             if isOverdue(draft) {
-                if let id = draft.remoteJobID { await companion.deleteAnalysisJob(id: id) }
+                if let id = draft.remoteJobID { await hosted.deleteAnalysisJob(id: id) }
                 markUnavailable(draft, message: "Import expired after waiting 24 hours. Tap Retry to submit it again.")
                 try? context.save()
                 continue
             }
-            if draft.state == "pending", companion.status == .available { await submit(draft); continue }
+            if draft.state == "pending", hosted.status == .available { await submit(draft); continue }
             guard ["queued", "processing"].contains(draft.state), let id = draft.remoteJobID else { continue }
             do {
-                let job = try await companion.analysisJob(id: id)
+                let job = try await hosted.analysisJob(id: id)
                 apply(job, to: draft)
                 if let items = job.result?.items {
                     draft.analyses = items; draft.state = "ready"; try context.save()
-                    await companion.deleteAnalysisJob(id: id)
+                    await hosted.deleteAnalysisJob(id: id)
                 } else { try context.save() }
-            } catch ClientError.jobNotFound {
+            } catch HostedError.jobNotFound {
                 markUnavailable(draft, message: "Job not found or expired. Tap Retry to submit it again.")
                 try? context.save()
             } catch {
@@ -402,7 +402,7 @@ struct AddClothesView: View {
         switch state {
         case "submitting": "Submitting import"
         case "queued": "Queued — safe to lock"
-        case "processing": "Processing on your Mac"
+        case "processing": "Processing on the hosted worker"
         case "ready": "Ready to review"
         case "failed": "Import failed"
         default: "Waiting to submit"

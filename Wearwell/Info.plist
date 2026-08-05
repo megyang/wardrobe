@@ -24,14 +24,21 @@
 	<string>public.app-category.lifestyle</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSBonjourServices</key>
+	<key>CFBundleURLTypes</key>
 	<array>
-		<string>_wearwell._tcp</string>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array><string>wearwell</string></array>
+		</dict>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Wearwell uses the camera only when you choose to photograph clothing.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Wearwell connects to your paired Mac companion for optional AI styling.</string>
+	<key>WearwellAPIBaseURL</key>
+	<string>$(WEARWELL_API_BASE_URL)</string>
+	<key>WearwellSupabaseURL</key>
+	<string>$(WEARWELL_SUPABASE_URL)</string>
+	<key>WearwellSupabaseAnonKey</key>
+	<string>$(WEARWELL_SUPABASE_ANON_KEY)</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Wearwell imports only the clothing photos you select.</string>
 	<key>UIApplicationSceneManifest</key>

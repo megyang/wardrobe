@@ -66,7 +66,7 @@ struct WearwellBackupArchive {
     var assets: [String: Data]
 }
 
-struct MacBackupPlan {
+struct BackupPlan {
     let manifest: WearwellBackupManifest
     let manifestData: Data
 }
@@ -152,8 +152,23 @@ struct BackupRestoreResult: Equatable {
 
 @MainActor
 enum BackupService {
+    static func clearCache(context: ModelContext) async {
+        for item in (try? context.fetch(FetchDescriptor<Garment>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<WishlistItem>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<Outfit>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<Visualization>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<ReferencePhoto>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<ImportDraft>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<InspirationLook>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<StyleProfile>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<StyleGeneration>())) ?? [] { context.delete(item) }
+        for item in (try? context.fetch(FetchDescriptor<AssetBlob>())) ?? [] { context.delete(item) }
+        try? context.save()
+        await AssetStore.shared.removeAllCachedAssets()
+    }
+
     static func makeDocument(context: ModelContext) async throws -> WearwellBackupDocument {
-        let plan = try await makeMacBackupPlan(context: context)
+        let plan = try await makeBackupPlan(context: context)
         var assetData: [String: Data] = [:]
         for asset in plan.manifest.assets {
             assetData[asset.name] = try await data(for: asset, context: context)
@@ -161,9 +176,8 @@ enum BackupService {
         return WearwellBackupDocument(archive: .init(manifest: plan.manifest, assets: assetData))
     }
 
-    /// Builds the small snapshot manifest without retaining every wardrobe image
-    /// in memory. The companion requests only hashes it has not stored before.
-    static func makeMacBackupPlan(context: ModelContext) async throws -> MacBackupPlan {
+    /// Builds the snapshot manifest without retaining every cached image in memory.
+    static func makeBackupPlan(context: ModelContext) async throws -> BackupPlan {
         let garments = try context.fetch(FetchDescriptor<Garment>())
         let wishlist = try context.fetch(FetchDescriptor<WishlistItem>())
         let outfits = try context.fetch(FetchDescriptor<Outfit>())
@@ -205,7 +219,7 @@ enum BackupService {
         )
         let encoder = JSONEncoder.wearwell
         encoder.outputFormatting = [.sortedKeys]
-        return MacBackupPlan(manifest: manifest, manifestData: try encoder.encode(manifest))
+        return BackupPlan(manifest: manifest, manifestData: try encoder.encode(manifest))
     }
 
     static func data(for asset: WearwellBackupManifest.AssetRecord, context: ModelContext) async throws -> Data {

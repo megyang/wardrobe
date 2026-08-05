@@ -4,7 +4,7 @@ import SwiftUI
 
 struct WishlistView: View {
     @Binding var showSettings: Bool
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
     @State private var photo: PhotosPickerItem?
@@ -50,8 +50,8 @@ struct WishlistView: View {
                             Text("After the item is ready, Luna will create 3–5 potential outfits.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.padding()
                     }
-                    if companion.status != .available {
-                        Text("Pair with the Mac companion in Settings to analyze a possible purchase.").font(.caption).foregroundStyle(.secondary)
+                    if hosted.status != .available {
+                        Text("Sign in to hosted Wearwell in Settings to analyze a possible purchase.").font(.caption).foregroundStyle(.secondary)
                     }
                     if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
 
@@ -98,12 +98,12 @@ struct WishlistView: View {
     }
 
     private func create(from data: Data, sourceURL: String?, managesWorkingState: Bool = true) async {
-        guard companion.status == .available else { error = "Pair the Mac companion first."; return }
+        guard hosted.status == .available else { error = "Sign in to hosted Wearwell first."; return }
         if managesWorkingState { working = true }
         error = nil
         do {
-            guard let analysis = try await companion.analyze(imageData: data, sourceURL: sourceURL).first else {
-                throw ClientError.server("No clothing item was found.")
+            guard let analysis = try await hosted.analyze(imageData: data, sourceURL: sourceURL).first else {
+                throw HostedError.server("No clothing item was found.")
             }
             let source = try await AssetStore.shared.save(data, preferredExtension: "jpg")
             let catalogData = analysis.catalogImageBase64.flatMap { Data(base64Encoded: $0) } ?? data
@@ -143,7 +143,7 @@ private struct WishlistRow: View {
 }
 
 struct AddWishlistItemView: View {
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var photo: PhotosPickerItem?
@@ -165,10 +165,10 @@ struct AddWishlistItemView: View {
     }
     private func loadURL() async { do { let result = try await ImportService.image(from: url); await create(from: result.0, sourceURL: result.1.absoluteString) } catch { self.error = error.localizedDescription } }
     private func create(from data: Data, sourceURL: String?) async {
-        guard companion.status == .available else { error = "Pair the Mac companion first."; return }
+        guard hosted.status == .available else { error = "Sign in to hosted Wearwell first."; return }
         working = true
         do {
-            guard let analysis = try await companion.analyze(imageData: data, sourceURL: sourceURL).first else { throw ClientError.server("No clothing item was found.") }
+            guard let analysis = try await hosted.analyze(imageData: data, sourceURL: sourceURL).first else { throw HostedError.server("No clothing item was found.") }
             let source = try await AssetStore.shared.save(data, preferredExtension: "jpg")
             let catalogData = analysis.catalogImageBase64.flatMap { Data(base64Encoded: $0) } ?? data
             let catalog = try await AssetStore.shared.save(catalogData, preferredExtension: "png")
@@ -187,7 +187,7 @@ struct WishlistDetailView: View {
     @Query private var outfits: [Outfit]
     @Query private var styleProfiles: [StyleProfile]
     @Query private var inspirations: [InspirationLook]
-    @EnvironmentObject private var companion: CompanionClient
+    @EnvironmentObject private var hosted: HostedClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var assessment: PurchaseAssessmentDTO?
@@ -203,14 +203,14 @@ struct WishlistDetailView: View {
                 CollageAssetImage(name: item.catalogAssetName).padding(18).frame(height: 330).frame(maxWidth: .infinity).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 20))
                 EditorialHeader(eyebrow: "Wishlist", title: item.label, subtitle: "\(item.color) · \(item.subcategory?.title ?? item.category.title)")
                 Text(item.details).foregroundStyle(.secondary)
-                Button { Task { await assess() } } label: { HStack { Spacer(); if working { ProgressView() } else { Label(assessmentIsActive ? "Outfits queued" : "Create 3–5 outfits + verdict", systemImage: "sparkles") }; Spacer() } }.buttonStyle(.borderedProminent).disabled(garments.count < 2 || companion.status != .available || working || assessmentIsActive)
+                Button { Task { await assess() } } label: { HStack { Spacer(); if working { ProgressView() } else { Label(assessmentIsActive ? "Outfits queued" : "Create 3–5 outfits + verdict", systemImage: "sparkles") }; Spacer() } }.buttonStyle(.borderedProminent).disabled(garments.count < 2 || hosted.status != .available || working || assessmentIsActive)
                 if working || assessmentIsActive {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.assessmentStage ?? "Queued — safe to lock").font(.caption.weight(.semibold))
                         if let estimate = item.assessmentEstimatedSecondsRemaining {
                             Text("Estimated time remaining: about \(max(1, Int(ceil(Double(estimate) / 60)))) min").font(.caption2).foregroundStyle(.secondary)
                         }
-                        Text("You can lock your phone or leave the app; the Mac companion will keep working.").font(.caption2).foregroundStyle(.secondary)
+                        Text("You can lock your phone or leave the app; the hosted service will keep working.").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 if let assessment { verdictView(assessment) }
@@ -333,7 +333,7 @@ struct WishlistDetailView: View {
         item.assessmentError = nil
         try? context.save()
         do {
-            let job = try await companion.submitAssessment(candidate: item, garments: garments, styleProfile: styleProfiles.first, inspirations: inspirations)
+            let job = try await hosted.submitAssessment(candidate: item, garments: garments, styleProfile: styleProfiles.first, inspirations: inspirations)
             item.assessmentJobID = job.id
             apply(job)
             try context.save()
@@ -347,18 +347,18 @@ struct WishlistDetailView: View {
     }
 
     private func refreshAssessment() async {
-        guard companion.status == .available,
+        guard hosted.status == .available,
               let state = item.assessmentState, ["queued", "processing"].contains(state),
               let id = item.assessmentJobID else { return }
         do {
-            let job = try await companion.assessmentJob(id: id)
+            let job = try await hosted.assessmentJob(id: id)
             apply(job)
             try context.save()
-        } catch ClientError.jobNotFound {
+        } catch HostedError.jobNotFound {
             item.assessmentState = "failed"
             item.assessmentError = "This purchase test expired. Generate it again."
             try? context.save()
-        } catch { /* the companion will keep processing while temporarily unreachable */ }
+        } catch { /* the hosted will keep processing while temporarily unreachable */ }
     }
 
     private func apply(_ job: AssessmentJobDTO) {

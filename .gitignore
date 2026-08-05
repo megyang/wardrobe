@@ -10,7 +10,16 @@ Companion/output/
 Companion/*.png
 Companion/*.jpg
 Companion/*.jpeg
+Backend/node_modules/
+Backend/data/
+Backend/.env
+Backend/tmp/
+Backend/output/
+Backend/*.png
+Backend/*.jpg
+Backend/*.jpeg
 .recovery/
 tmp/
 xcuserdata/
 *.xcuserstate
+Config/Hosted.local.xcconfig

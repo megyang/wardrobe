@@ -126,6 +126,16 @@ actor AssetStore {
         }
     }
 
+    func removeAllCachedAssets() {
+        if let values = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for value in values { try? FileManager.default.removeItem(at: value) }
+        }
+        let visualRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appending(path: "WearwellVisualReferences", directoryHint: .isDirectory)
+        try? FileManager.default.removeItem(at: visualRoot)
+        Self.collageCache.values.removeAllObjects()
+    }
+
     func legacyAssetNames() -> [String] {
         (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?
             .filter { $0.isFileURL && !$0.hasDirectoryPath }
