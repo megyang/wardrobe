@@ -27,6 +27,9 @@ struct ShopProductCard: View {
             Text(product.title).font(.headline)
             price
             Text(product.rationale).font(.subheadline)
+            if let visualNotes = product.visualNotes, !visualNotes.isEmpty {
+                Text(visualNotes).font(.caption).foregroundStyle(.secondary)
+            }
             if !product.matchedWardrobeGap.isEmpty {
                 Label(product.matchedWardrobeGap, systemImage: "hanger").font(.caption).foregroundStyle(.secondary)
             }
@@ -38,7 +41,7 @@ struct ShopProductCard: View {
                 Button(role: .destructive, action: dismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless).accessibilityLabel("Dismiss recommendation")
             }
-            Text("Verified \(verifiedDateText) · Price and availability can change at the retailer.")
+            Text("\((product.source ?? "web").uppercased()) · Verified \(verifiedDateText) · Price and availability can change at the retailer.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(16)
@@ -88,10 +91,19 @@ struct ShoppingPreferencesView: View {
                     }
                 }
             }
-            Section("Stores") {
-                ForEach(ShoppingRetailer.bundled) { retailer in
+            Section("UCP catalogs") {
+                ForEach(ShoppingRetailer.ucp) { retailer in
                     Toggle(retailer.name, isOn: retailerBinding(retailer.domain))
                 }
+            }
+            Section("Web-search stores") {
+                ForEach(ShoppingRetailer.web) { retailer in
+                    Toggle(retailer.name, isOn: retailerBinding(retailer.domain))
+                }
+                Text("These stores use verified web discovery and may return fewer products than UCP catalogs.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Custom stores") {
                 HStack {
                     TextField("Add niche store domain", text: $customDomain).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Button("Add") { addDomain() }.disabled(ShoppingRetailer.normalizedDomain(customDomain) == nil)
@@ -106,7 +118,7 @@ struct ShoppingPreferencesView: View {
                 TextField("Materials, comma separated", text: listBinding(\.excludedMaterials))
             }
             Section {
-                Text("Wearwell searches only these stores. A niche site may return fewer results when its product pages do not expose standard metadata.")
+                Text("Wearwell checks custom stores for UCP automatically, then falls back to verified web discovery. The bundled UCP integration uses Shopify's public development agent profile and must be replaced before a production release.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -32,16 +32,30 @@ final class ShopTests: XCTestCase {
         XCTAssertNil(ShoppingRetailer.normalizedDomain("http://example.com"))
         XCTAssertNil(ShoppingRetailer.normalizedDomain("https://user@example.com"))
         XCTAssertNil(ShoppingRetailer.normalizedDomain("127.0.0.1"))
-        XCTAssertEqual(Array(ShoppingRetailer.bundled.map(\.domain).suffix(2)), ["cos.com", "oakandfort.com"])
+        XCTAssertEqual(ShoppingRetailer.ucp.count, 20)
+        XCTAssertEqual(ShoppingRetailer.web.count, 5)
+        XCTAssertEqual(ShoppingRetailer.bundled.count, 25)
+        XCTAssertEqual(ShoppingRetailer.ucp.suffix(3).map(\.domain), ["lewkin.com", "thecommense.com", "aelfriceden.com"])
     }
 
     func testExistingShoppingProfilesReceiveNewRetailerDefaultsOnce() throws {
         let oldJSON = #"{"country":"US","currency":"USD","sizes":{},"budgets":{},"preferredRetailers":["aritzia.com"],"customRetailerDomains":[],"excludedCategories":[],"excludedColors":[],"excludedMaterials":[],"dismissedProductIDs":[]}"#.data(using: .utf8)!
         var profile = try JSONDecoder().decode(ShoppingProfileDTO.self, from: oldJSON)
         XCTAssertTrue(ShoppingRetailer.applyBundledUpdates(to: &profile))
-        XCTAssertTrue(profile.preferredRetailers.contains("cos.com"))
+        XCTAssertTrue(profile.preferredRetailers.contains("aritzia.com"), "Customized existing choices are preserved")
+        XCTAssertTrue(profile.preferredRetailers.contains("lewkin.com"))
         XCTAssertTrue(profile.preferredRetailers.contains("oakandfort.com"))
         XCTAssertFalse(ShoppingRetailer.applyBundledUpdates(to: &profile))
+    }
+
+    func testUnmodifiedOldDefaultsBecomeUCPOnly() {
+        var profile = ShoppingProfileDTO(
+            preferredRetailers: ["aritzia.com", "uniqlo.com", "hollisterco.com", "cantoncollective.com", "codibook.net", "cos.com", "oakandfort.com"],
+            bundledRetailerVersion: 2
+        )
+        XCTAssertTrue(ShoppingRetailer.applyBundledUpdates(to: &profile))
+        XCTAssertEqual(profile.preferredRetailers, ShoppingRetailer.ucp.map(\.domain))
+        XCTAssertFalse(profile.preferredRetailers.contains("aritzia.com"))
     }
 
     func testMarkdownRequiresTwoRetailerPrices() {
@@ -59,6 +73,14 @@ final class ShopTests: XCTestCase {
             confidence: 0.9, rationale: product.rationale, matchedWardrobeGap: product.matchedWardrobeGap
         )
         XCTAssertFalse(missingOriginal.hasVerifiedMarkdown)
+    }
+
+    func testOldCachedProductDecodesWithoutVisualProvenance() throws {
+        let json = #"{"id":"old","canonicalURL":"https://example.com/p","retailer":"Example","domain":"example.com","title":"Top","imageURL":"https://example.com/p.jpg","category":"tops","colors":[],"currentPrice":40,"originalPrice":null,"currency":"USD","verifiedAt":"2026-08-05T12:00:00Z","confidence":0.8,"rationale":"Useful","matchedWardrobeGap":"layer"}"#.data(using: .utf8)!
+        let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)
+        XCTAssertNil(product.source)
+        XCTAssertNil(product.visualNotes)
+        XCTAssertEqual(product.id, "old")
     }
 
     @MainActor

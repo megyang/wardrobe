@@ -2,15 +2,37 @@ import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 
-export const BUNDLED_RETAILERS = Object.freeze([
-  { name: "Aritzia", domain: "aritzia.com" },
-  { name: "Uniqlo", domain: "uniqlo.com" },
-  { name: "Hollister", domain: "hollisterco.com" },
-  { name: "Canton Collective", domain: "cantoncollective.com" },
-  { name: "Codibook", domain: "codibook.net" },
-  { name: "COS", domain: "cos.com" },
-  { name: "OAK + FORT", domain: "oakandfort.com" }
+export const UCP_RETAILERS = Object.freeze([
+  { name: "Canton Collective", domain: "cantoncollective.com", source: "ucp" },
+  { name: "OAK + FORT", domain: "oakandfort.com", source: "ucp" },
+  { name: "Lisa Says Gah", domain: "lisasaysgah.com", source: "ucp" },
+  { name: "Damson Madder", domain: "damsonmadder.com", source: "ucp" },
+  { name: "Paloma Wool", domain: "palomawool.com", source: "ucp" },
+  { name: "Frank And Oak", domain: "frankandoak.com", source: "ucp" },
+  { name: "MESHKI", domain: "meshki.us", source: "ucp" },
+  { name: "Peppermayo", domain: "peppermayo.com", source: "ucp" },
+  { name: "Motel Rocks", domain: "motelrocks.com", source: "ucp" },
+  { name: "Rouje", domain: "rouje.com", source: "ucp" },
+  { name: "Beginning Boutique", domain: "beginningboutique.com", source: "ucp" },
+  { name: "Everlane", domain: "everlane.com", source: "ucp" },
+  { name: "Girlfriend Collective", domain: "girlfriend.com", source: "ucp" },
+  { name: "Los Angeles Apparel", domain: "losangelesapparel.net", source: "ucp" },
+  { name: "Big Bud Press", domain: "bigbudpress.com", source: "ucp" },
+  { name: "Disturbia", domain: "disturbia.us", source: "ucp" },
+  { name: "Lucy & Yak", domain: "lucyandyak.com", source: "ucp" },
+  { name: "Lewkin", domain: "lewkin.com", source: "ucp" },
+  { name: "Commense", domain: "thecommense.com", source: "ucp" },
+  { name: "Aelfric Eden", domain: "aelfriceden.com", source: "ucp" }
 ]);
+
+export const WEB_RETAILERS = Object.freeze([
+  { name: "Aritzia", domain: "aritzia.com", source: "web" },
+  { name: "Uniqlo", domain: "uniqlo.com", source: "web" },
+  { name: "Hollister", domain: "hollisterco.com", source: "web" },
+  { name: "Codibook", domain: "codibook.net", source: "web" },
+  { name: "COS", domain: "cos.com", source: "web" }
+]);
+export const BUNDLED_RETAILERS = Object.freeze([...UCP_RETAILERS, ...WEB_RETAILERS]);
 
 const MAX_PAGE_BYTES = 1_500_000;
 const MAX_IMAGE_BYTES = 4_000_000;
@@ -142,7 +164,7 @@ export function parseProductHTML(html, pageURL) {
     category: normalizeCategory(`${categoryText} ${title} ${description}`), colors,
     currentPrice: currentPrice ?? null, originalPrice, currency,
     verifiedAt: new Date().toISOString(), confidence: product ? 0.92 : 0.68,
-    description: description.slice(0, 500)
+    description: description.slice(0, 500), source: "web", sourceProductID: null
   };
 }
 
@@ -194,7 +216,7 @@ function numbersFromPriceSpecification(value) { return values(value).flatMap(ite
 function shopifyCompareAtPrices(html) { return [...html.matchAll(/["']compare_at_price["']\s*:\s*["']?([0-9]+(?:\.[0-9]+)?)/gi)].map(match => numberValue(match[1])).filter(Boolean); }
 function decodeHTML(value) { return String(value || "").replaceAll("&amp;", "&").replaceAll("&quot;", "\"").replaceAll("&#39;", "'").replaceAll("&lt;", "<").replaceAll("&gt;", ">"); }
 function titleCase(value) { return value ? value[0].toUpperCase() + value.slice(1) : "Retailer"; }
-function normalizeCategory(value) {
+export function normalizeCategory(value) {
   const text = value.toLowerCase();
   if (/dress|jumpsuit/.test(text)) return "dresses";
   if (/shoe|boot|loafer|sneaker|heel|flat/.test(text)) return "shoes";

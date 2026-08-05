@@ -9,6 +9,7 @@ struct WishlistView: View {
     @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
     @Query private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
+    @Query(sort: \InspirationLook.updatedAt, order: .reverse) private var inspirations: [InspirationLook]
     @Query(sort: \ShoppingProfile.updatedAt, order: .reverse) private var shoppingProfiles: [ShoppingProfile]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var feedSnapshots: [ShopFeedSnapshot]
     @State private var photo: PhotosPickerItem?
@@ -26,6 +27,10 @@ struct WishlistView: View {
     private var shoppingProfile: ShoppingProfile? { shoppingProfiles.first }
     private var activeFeed: ShopFeedSnapshot? { feedSnapshots.first { ["queued", "processing"].contains($0.state) } }
     private var latestFeed: ShopFeedSnapshot? { feedSnapshots.first { $0.state == "complete" } }
+    private var displayedFeed: ShopFeedSnapshot? {
+        if let activeFeed, !activeFeed.products.isEmpty { return activeFeed }
+        return latestFeed
+    }
 
     var body: some View {
         ZStack {
@@ -108,7 +113,7 @@ struct WishlistView: View {
                     .padding(20)
                     .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
 
-                    if let feed = latestFeed {
+                    if let feed = displayedFeed {
                         HStack(alignment: .firstTextBaseline) {
                             Text(feed.query.isEmpty ? "Personalized picks" : feed.query).font(.title2.bold()).lineLimit(2)
                             Spacer()
@@ -121,6 +126,10 @@ struct WishlistView: View {
                             ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }) { product in
                                 ShopProductCard(product: product, test: { Task { await test(product) } }, dismiss: { dismiss(product, from: feed) })
                             }
+                        }
+                        if activeFeed?.id == feed.id {
+                            ProgressView("Finding more visually matched pieces…")
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
                         }
                     } else if !shopWorking && activeFeed == nil {
                         EmptyState(icon: "bag.badge.plus", title: "No shop picks yet", message: "Pair the Mac and search for a piece, or refresh for recommendations based on your style profile.")
@@ -206,7 +215,12 @@ struct WishlistView: View {
                     let amount = value.formatted(.currency(code: discovery.currency ?? "USD"))
                     return discovery.originalPrice.map { "\(amount), originally \($0.formatted(.currency(code: discovery.currency ?? "USD")))" } ?? amount
                 } ?? "Price unavailable"
-                details += "\n\nDiscovered at \(discovery.retailer). \(price). Verified \(discovery.verifiedAt). Recommendation: \(discovery.rationale)"
+                let provenance = [
+                    "Source: \(discovery.source ?? "verified web")",
+                    discovery.sourceProductID.map { "Product ID: \($0)" },
+                    discovery.visualNotes.map { "Visual match: \($0)" }
+                ].compactMap { $0 }.joined(separator: ". ")
+                details += "\n\nDiscovered at \(discovery.retailer). \(price). Verified \(discovery.verifiedAt). Recommendation: \(discovery.rationale). \(provenance)"
             }
             let item = WishlistItem(
                 label: analysis.label,
@@ -253,7 +267,10 @@ struct WishlistView: View {
         let snapshot = ShopFeedSnapshot(query: query)
         context.insert(snapshot); try? context.save()
         do {
-            let job = try await companion.submitShopDiscovery(query: query, garments: garments, styleProfile: styleProfiles.first, shoppingProfile: shoppingProfile.preferences)
+            let job = try await companion.submitShopDiscovery(
+                query: query, garments: garments, styleProfile: styleProfiles.first,
+                inspirations: inspirations, shoppingProfile: shoppingProfile.preferences
+            )
             snapshot.jobID = job.id; snapshot.state = job.state
             try context.save()
         } catch {
@@ -274,8 +291,13 @@ struct WishlistView: View {
                 snapshot.products = feed.products.filter { !dismissed.contains($0.id) }
                 snapshot.generatedAt = ISO8601DateFormatter().date(from: feed.generatedAt) ?? .now
                 snapshot.expiresAt = snapshot.generatedAt.addingTimeInterval(6 * 60 * 60)
-                snapshot.state = "complete"
-                for old in feedSnapshots.dropFirst(8) { context.delete(old) }
+                if job.state == "complete" || (job.state == "failed" && !feed.products.isEmpty) {
+                    snapshot.state = "complete"
+                    if job.state == "failed" {
+                        shopError = job.error ?? "Some later recommendations could not be prepared. Showing the completed pages."
+                    }
+                    for old in feedSnapshots.dropFirst(8) { context.delete(old) }
+                }
             } else if job.state == "failed" {
                 shopError = job.error ?? "Product discovery failed. Your last successful picks are still available."
             }
@@ -308,7 +330,10 @@ struct WishlistView: View {
 }
 
 private extension ShopFeedSnapshot {
-    var stageText: String { state == "queued" ? "Queued product search…" : "Searching and verifying product pages…" }
+    var stageText: String {
+        if state == "queued" { return "Queued product search…" }
+        return products.isEmpty ? "Searching selected catalogs…" : "Finding more visually matched pieces…"
+    }
 }
 
 private struct WishlistRow: View {

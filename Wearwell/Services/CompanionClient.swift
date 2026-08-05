@@ -355,6 +355,7 @@ final class CompanionClient: ObservableObject {
         query: String,
         garments: [Garment],
         styleProfile: StyleProfile?,
+        inspirations: [InspirationLook],
         shoppingProfile: ShoppingProfileDTO
     ) async throws -> ShopDiscoveryJobDTO {
         status = .busy
@@ -363,12 +364,20 @@ final class CompanionClient: ObservableObject {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             status = .available
         }
+        let readyInspirations = inspirations.filter { $0.state == "ready" && $0.analysis != nil }
         let payload = ShopDiscoveryRequest(
             query: query,
             retailerDomains: shoppingProfile.retailerDomains,
             preferences: shoppingProfile,
             styleProfile: styleProfile?.profile,
-            wardrobe: garments.map(GarmentSummary.init)
+            wardrobe: garments.map(GarmentSummary.init),
+            inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
+            garmentVisuals: await visualReferences(garments.map {
+                VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
+            }, byteBudget: 10 * 1024 * 1024),
+            inspirationVisuals: await visualReferences(readyInspirations.map {
+                VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
+            }, byteBudget: 3 * 1024 * 1024)
         )
         let data = try await send(path: "v1/jobs/shop-discovery", body: payload)
         return try JSONDecoder().decode(ShopDiscoveryJobDTO.self, from: data)
@@ -618,6 +627,7 @@ private struct VisualSource { let id, assetName: String }
 private struct VisualReference: Codable { let id, imageBase64: String }
 private struct InspirationExample: Codable {
     let id: UUID
+    let isFavorite: Bool
     let summary: String
     let aesthetics, palette, silhouettes, layering, details, occasions: [String]
     let outfitFormula, proportions, focalPoints, stylingRules: [String]
@@ -625,7 +635,7 @@ private struct InspirationExample: Codable {
 
     init?(_ look: InspirationLook) {
         guard let analysis = look.analysis else { return nil }
-        id = look.id; summary = analysis.summary; aesthetics = analysis.aesthetics; palette = analysis.palette
+        id = look.id; isFavorite = look.isFavorite; summary = analysis.summary; aesthetics = analysis.aesthetics; palette = analysis.palette
         silhouettes = analysis.silhouettes; layering = analysis.layering; details = analysis.details
         occasions = analysis.occasions; vector = analysis.vector
         outfitFormula = analysis.outfitFormula ?? []; proportions = analysis.proportions ?? []
@@ -689,6 +699,8 @@ private struct ShopDiscoveryRequest: Codable {
     let preferences: ShoppingProfileDTO
     let styleProfile: StyleProfileDTO?
     let wardrobe: [GarmentSummary]
+    let inspirationExamples: [InspirationExample]
+    let garmentVisuals, inspirationVisuals: [VisualReference]
 }
 private struct RenderRequest: Codable { let mode, referenceBase64: String; let garmentImagesBase64: [String] }
 struct RenderResponse: Codable { let imageBase64: String }

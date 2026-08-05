@@ -19,5 +19,7 @@ test("shop providers enforce selected domains and deduplicate canonical products
   assert.equal(provider.id, "live-web");
   assert.equal(products.length, 1);
   assert.match(searchedPrompt, /only these retailer domains: shop\.example/i);
+  assert.match(searchedPrompt, /untrusted data/i);
+  assert.doesNotMatch(searchedPrompt, /owned wardrobe|style profile/i);
   assert.deepEqual(verifiedDomains, [["shop.example"], ["shop.example"]]);
 });

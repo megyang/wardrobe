@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BUNDLED_RETAILERS, isPrivateAddress, normalizeDomain, parseProductHTML } from "../shop-discovery.mjs";
+import { BUNDLED_RETAILERS, UCP_RETAILERS, WEB_RETAILERS, isPrivateAddress, normalizeDomain, parseProductHTML } from "../shop-discovery.mjs";
 
-test("bundled retailers include the complementary minimal and Korean-fashion sources", () => {
-  assert.deepEqual(BUNDLED_RETAILERS.map(item => item.domain), [
-    "aritzia.com", "uniqlo.com", "hollisterco.com", "cantoncollective.com",
-    "codibook.net", "cos.com", "oakandfort.com"
-  ]);
+test("bundled retailers contain twenty UCP catalogs and five web fallbacks", () => {
+  assert.equal(UCP_RETAILERS.length, 20);
+  assert.equal(WEB_RETAILERS.length, 5);
+  assert.equal(BUNDLED_RETAILERS.length, 25);
+  assert.deepEqual(UCP_RETAILERS.slice(-3).map(item => item.domain), ["lewkin.com", "thecommense.com", "aelfriceden.com"]);
+  assert.deepEqual(WEB_RETAILERS.map(item => item.domain), ["aritzia.com", "uniqlo.com", "hollisterco.com", "codibook.net", "cos.com"]);
 });
 
 test("retailer domains normalize without accepting arbitrary URL schemes or IPs", () => {

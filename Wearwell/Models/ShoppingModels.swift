@@ -6,7 +6,7 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var currency: String = "USD"
     var sizes: [String: String] = [:]
     var budgets: [String: Double] = [:]
-    var preferredRetailers: [String] = ShoppingRetailer.bundled.map(\.domain)
+    var preferredRetailers: [String] = ShoppingRetailer.ucp.map(\.domain)
     var customRetailerDomains: [String] = []
     var excludedCategories: [String] = []
     var excludedColors: [String] = []
@@ -23,25 +23,54 @@ struct ShoppingProfileDTO: Codable, Equatable {
 }
 
 struct ShoppingRetailer: Identifiable, Equatable {
+    enum Source: String { case ucp, web }
     let name: String
     let domain: String
+    let source: Source
     var id: String { domain }
 
-    static let bundled = [
-        ShoppingRetailer(name: "Aritzia", domain: "aritzia.com"),
-        ShoppingRetailer(name: "Uniqlo", domain: "uniqlo.com"),
-        ShoppingRetailer(name: "Hollister", domain: "hollisterco.com"),
-        ShoppingRetailer(name: "Canton Collective", domain: "cantoncollective.com"),
-        ShoppingRetailer(name: "Codibook", domain: "codibook.net"),
-        ShoppingRetailer(name: "COS", domain: "cos.com"),
-        ShoppingRetailer(name: "OAK + FORT", domain: "oakandfort.com")
+    static let ucp = [
+        ShoppingRetailer(name: "Canton Collective", domain: "cantoncollective.com", source: .ucp),
+        ShoppingRetailer(name: "OAK + FORT", domain: "oakandfort.com", source: .ucp),
+        ShoppingRetailer(name: "Lisa Says Gah", domain: "lisasaysgah.com", source: .ucp),
+        ShoppingRetailer(name: "Damson Madder", domain: "damsonmadder.com", source: .ucp),
+        ShoppingRetailer(name: "Paloma Wool", domain: "palomawool.com", source: .ucp),
+        ShoppingRetailer(name: "Frank And Oak", domain: "frankandoak.com", source: .ucp),
+        ShoppingRetailer(name: "MESHKI", domain: "meshki.us", source: .ucp),
+        ShoppingRetailer(name: "Peppermayo", domain: "peppermayo.com", source: .ucp),
+        ShoppingRetailer(name: "Motel Rocks", domain: "motelrocks.com", source: .ucp),
+        ShoppingRetailer(name: "Rouje", domain: "rouje.com", source: .ucp),
+        ShoppingRetailer(name: "Beginning Boutique", domain: "beginningboutique.com", source: .ucp),
+        ShoppingRetailer(name: "Everlane", domain: "everlane.com", source: .ucp),
+        ShoppingRetailer(name: "Girlfriend Collective", domain: "girlfriend.com", source: .ucp),
+        ShoppingRetailer(name: "Los Angeles Apparel", domain: "losangelesapparel.net", source: .ucp),
+        ShoppingRetailer(name: "Big Bud Press", domain: "bigbudpress.com", source: .ucp),
+        ShoppingRetailer(name: "Disturbia", domain: "disturbia.us", source: .ucp),
+        ShoppingRetailer(name: "Lucy & Yak", domain: "lucyandyak.com", source: .ucp),
+        ShoppingRetailer(name: "Lewkin", domain: "lewkin.com", source: .ucp),
+        ShoppingRetailer(name: "Commense", domain: "thecommense.com", source: .ucp),
+        ShoppingRetailer(name: "Aelfric Eden", domain: "aelfriceden.com", source: .ucp)
     ]
-    static let currentDefaultsVersion = 2
+
+    static let web = [
+        ShoppingRetailer(name: "Aritzia", domain: "aritzia.com", source: .web),
+        ShoppingRetailer(name: "Uniqlo", domain: "uniqlo.com", source: .web),
+        ShoppingRetailer(name: "Hollister", domain: "hollisterco.com", source: .web),
+        ShoppingRetailer(name: "Codibook", domain: "codibook.net", source: .web),
+        ShoppingRetailer(name: "COS", domain: "cos.com", source: .web)
+    ]
+    static let bundled = ucp + web
+    static let currentDefaultsVersion = 3
 
     static func applyBundledUpdates(to profile: inout ShoppingProfileDTO) -> Bool {
         guard (profile.bundledRetailerVersion ?? 1) < currentDefaultsVersion else { return false }
-        for domain in ["cos.com", "oakandfort.com"] where !profile.preferredRetailers.contains(domain) {
-            profile.preferredRetailers.append(domain)
+        let previousDefaults = Set(["aritzia.com", "uniqlo.com", "hollisterco.com", "cantoncollective.com", "codibook.net", "cos.com", "oakandfort.com"])
+        if Set(profile.preferredRetailers) == previousDefaults {
+            profile.preferredRetailers = ucp.map(\.domain)
+        } else {
+            for domain in ucp.map(\.domain) where !profile.preferredRetailers.contains(domain) {
+                profile.preferredRetailers.append(domain)
+            }
         }
         profile.bundledRetailerVersion = currentDefaultsVersion
         return true
@@ -74,6 +103,11 @@ struct DiscoveredProductDTO: Codable, Identifiable, Equatable {
     let confidence: Double
     let rationale: String
     let matchedWardrobeGap: String
+    var source: String? = nil
+    var sourceProductID: String? = nil
+    var matchedInspirationIDs: [String]? = nil
+    var compatibleGarmentIDs: [String]? = nil
+    var visualNotes: String? = nil
 
     var hasVerifiedMarkdown: Bool {
         guard let currentPrice, let originalPrice else { return false }

@@ -6,7 +6,7 @@ export function createLiveWebShopProvider({ search, verify = verifyProductPage }
   if (typeof search !== "function" || typeof verify !== "function") throw new TypeError("A Shop provider requires search and verification functions.");
   return Object.freeze({
     id: "live-web",
-    async discoverVerifiedProducts({ query, domains, preferences, styleProfile, wardrobe, signal, workerIndex }) {
+    async discoverVerifiedProducts({ query, domains, preferences, signal, workerIndex }) {
       const schema = {
         type: "object", additionalProperties: false, required: ["candidates"], properties: {
           candidates: { type: "array", minItems: 1, maxItems: 30, items: {
@@ -19,9 +19,7 @@ export function createLiveWebShopProvider({ search, verify = verifyProductPage }
         `Search only these retailer domains: ${domains.join(", ")}.`,
         `Request: ${query}.`,
         `Shopping constraints: ${JSON.stringify(preferences || {})}.`,
-        `Style profile: ${JSON.stringify(styleProfile || null)}.`,
-        `Owned wardrobe summary: ${JSON.stringify((wardrobe || []).slice(0, 250))}.`,
-        "Favor pieces that fill a wardrobe gap and can work in several outfits. Include sale candidates when relevant, but do not invent prices. Return canonical-looking individual product URLs, not category, search, cart, social, or editorial pages. Find more candidates than needed so verification can discard stale pages."
+        "Favor individual pieces matching the request and constraints. Include sale candidates when relevant, but do not invent prices. Return canonical-looking individual product URLs, not category, search, cart, social, or editorial pages. Find more candidates than needed so verification can discard stale pages."
       ].join("\n\n");
       const found = await search(prompt, schema, { signal, workerIndex });
       const settled = await Promise.allSettled((found.candidates || []).slice(0, 24).map(item => verify(item.url, domains, signal)));
