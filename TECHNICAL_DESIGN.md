@@ -7,7 +7,7 @@
 
 This document explains how Wearwell works, why its major design decisions were made, and which parts of the hosted migration are complete or still in progress. It is intentionally more educational than a normal design document. When the product changes, update this file in the same pull request as the code.
 
-> Important: the repository is in the middle of a migration from a paired Mac companion to a hosted multi-user service. This document describes the current working tree, not only the last commit. Sections labeled **In progress** identify code that exists on one side of the system but is not wired end to end yet.
+> Important: the hosted foundation is implemented, but deployment and two-account staging validation still require real Supabase, Render, Apple, and OpenAI credentials. This document distinguishes checked-in behavior from those operational release gates.
 
 ## 1. Executive summary
 
@@ -300,9 +300,9 @@ An authenticated Supabase user is not automatically an active Wearwell member. `
 
 Invite codes are stored only as SHA-256 hashes. The `redeem_invite` PostgreSQL function locks one matching invite row, checks expiry and use limits, activates the profile, records redemption, and increments usage atomically.
 
-### Current session limitation
+### Session renewal
 
-The refresh token is stored, but the iOS client does not yet use it to refresh an expired access token. Once the access token expires, API calls can fail as signed out until the user authenticates again. A production session manager should refresh ahead of expiry, serialize concurrent refresh attempts, and retry the original request once.
+The iOS client stores access and refresh tokens in Keychain. A 401 triggers one Supabase refresh-token exchange and one retry of the original API request; a failed refresh clears the session.
 
 ## 10. Hosted API
 
@@ -376,11 +376,11 @@ RLS is enabled on user tables. Policies permit authenticated users to select the
 
 RLS is defense in depth; it does not remove the need for owner-filtered API queries.
 
-### Hosted sync status: in progress
+### Hosted sync status
 
-The server-side data and change-feed endpoints exist, but `HostedClient` does not currently call `/v1/sync` or `/v1/data`. The active iOS product still uses local SwiftData as its domain-record source of truth and primarily uses the hosted service for auth, AI jobs, asset transfer, quotas, and backup import.
+The server provides revisioned CRUD plus a paged cursor/tombstone feed. The current iOS bootstrap uses the backup snapshot representation: it downloads the owner-scoped cloud snapshot and signed assets, verifies checksums, restores SwiftData transactionally by UUID, then uploads the merged snapshot. Cache ownership is recorded by Supabase user ID and all cached records/images are cleared on sign-out or an account change.
 
-Therefore claims such as “records are synced across devices” are architectural intent, not complete current behavior. A future sync engine must define serialization, revision tracking, conflict UI, tombstone handling, asset-ID mapping, initial bootstrap, offline writes, and cursor persistence.
+The next refinement is to move every view mutation behind per-record repositories and consume `/v1/sync` incrementally instead of using snapshots at foreground boundaries. The checked-in snapshot path provides cloud persistence, migration, account isolation, and offline reads; it does not yet offer interactive field-level conflict resolution.
 
 ## 12. Private object storage
 
@@ -408,12 +408,12 @@ The API verifies asset ownership and returns a signed download URL that expires 
 
 The worker uploads generated PNG bytes with a server-created UUID and inserts a ready asset row. Job results contain the generated asset ID rather than base64 image bytes. The iPhone downloads the asset and stores a local copy through `AssetStore`.
 
-### Current storage lifecycle limitations
+### Storage lifecycle
 
-- Re-uploading the same local visual reference currently creates another remote asset; SHA-256 is validated but not used for owner-level deduplication.
-- AI requests can repeatedly upload wardrobe/inspiration images.
-- Source and visual-reference asset cleanup is not yet clearly tied to local deletion or job completion.
-- The iPhone labels all uploaded `Data` as JPEG even when the bytes may be PNG; MIME detection should eventually use the actual file type.
+- Ready assets are deduplicated per owner by SHA-256 and byte length before a signed upload is issued.
+- Record imports and CRUD updates maintain explicit asset-reference rows.
+- The worker marks and removes assets that remain unreferenced for seven days.
+- The iPhone detects JPEG, PNG, WebP, and HEIC signatures and sends the matching MIME type with signed uploads.
 
 These affect quota correctness and long-term storage cost.
 
@@ -563,7 +563,7 @@ The client validates every outfit against the owned wardrobe and candidate categ
 
 The collage editor can ask for one unused owned item from a chosen category or subcategory. The client precomputes eligible items, the backend constrains structured output to those IDs, and the client verifies the returned ID again before adding it.
 
-**In progress:** client, workflow, schemas, and API route recognition include `recommend-item`, but the initial SQL `jobs.kind` check constraint and quota categories do not yet include it. A fresh database using the current migration will reject that job until the migration is updated.
+The checked-in migrations include `recommend-item` in the jobs constraint and shared styling quota category.
 
 ### 15.6 Catalog edit and visualization
 
@@ -826,18 +826,13 @@ Keep a versioned evaluation set with difficult cases such as layered clothing, l
 
 These items describe the audited 2026-08-05 working tree:
 
-1. **README is stale.** It still describes CloudKit and a paired Mac companion with `codex login`.
-2. **Hosted domain sync is server-only.** `/v1/sync` and `/v1/data` exist, but the iOS sync engine is not implemented.
-3. **`recommend-item` needs a database migration update.** API/client/worker code recognizes it, but the initial jobs constraint and quota function do not.
-4. **Token refresh is missing.** Refresh tokens are stored but unused.
-5. **Remote asset lifecycle is incomplete.** Repeated visual uploads can accumulate and are not content-deduplicated.
-6. **Feedback is local.** Server tables exist, but ratings and edit feedback are stored in `UserDefaults` and sent only in later style payloads.
-7. **Hosted semantic outfit validation is incomplete.** The phone validates results, but hosted workflows should also apply deterministic composition rules.
-8. **Logging is insufficient for on-call operation.** Request IDs exist, but end-to-end structured event logging and metrics do not.
-9. **Usage accounting needs review.** Quotas count created jobs; successful actual usage is recorded separately. Garment analysis currently does not combine generated-cutout image usage into its returned usage summary.
-10. **Hosted backup export is not surfaced as a complete downloadable package in the iOS UI.** Local package export remains the mature user path.
-11. **Share Extension capability depends on App Group configuration.** Verify the hosted branch's signing/capability setup before promising share-sheet handoff.
-12. **The branch is actively changing.** Re-audit this list before merging or deploying.
+1. **Per-record iOS repositories remain the main refactor.** Snapshot synchronization is wired; direct view writes should move behind repositories before a broad beta.
+2. **Feedback persistence is incomplete.** Server tables exist, but some ratings and edit feedback still originate in `UserDefaults` and are sent in later style payloads.
+3. **Hosted semantic outfit validation needs another layer.** The phone validates results; the worker should also apply deterministic composition rules before completing a job.
+4. **Observability needs production integration.** Request IDs, usage, model, cost, and latency are persisted, but dashboards and alerts are not configured in source.
+5. **Usage accounting needs staged calibration.** Quotas count created jobs; successful actual usage is recorded separately, and image-token/call estimates must be compared with invoices.
+6. **Share Extension capability depends on App Group configuration.** Verify the hosted branch's signing/capability setup before promising share-sheet handoff.
+7. **Deployment is intentionally staging-first.** Re-run the release checklist with two real accounts before production or external distribution.
 
 ## 25. Design decisions and tradeoffs
 
@@ -936,4 +931,3 @@ Do not silently rewrite history. If a major architectural decision changes, add 
 **Why:** Remove the requirement for every user to operate a reachable Mac, support invitations and multiple accounts, centralize secret management, enforce quotas, and make long-running work operationally manageable.
 
 **Consequences:** Wearwell now needs production-grade deployment, database migration, account lifecycle, sync, storage cleanup, observability, token refresh, cost controls, and incident response.
-

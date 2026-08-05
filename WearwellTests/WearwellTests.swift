@@ -4,6 +4,42 @@ import UIKit
 @testable import Wearwell
 
 final class WearwellTests: XCTestCase {
+    func testHostedStatusAndOfflineMutationMessagesAreExplicit() {
+        XCTAssertEqual(HostedStatus.offline.label, "Offline — cached data available")
+        XCTAssertEqual(HostedStatus.inviteRequired.label, "Invitation required")
+        XCTAssertEqual(HostedError.offlineWrite.errorDescription, "Connect to Wearwell before making changes.")
+    }
+
+    func testHostedUsageMapsSnakeCaseAPIFields() throws {
+        let data = Data(#"{"analysis_used":3,"analysis_limit":25,"style_used":4,"style_limit":50,"image_used":2,"image_limit":10,"storage_used":1024,"storage_limit":1073741824}"#.utf8)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let usage = try decoder.decode(HostedUsage.self, from: data)
+        XCTAssertEqual(usage.analysisUsed, 3)
+        XCTAssertEqual(usage.storageLimit, 1_073_741_824)
+    }
+
+    func testHostedUploadMIMETypeUsesImageSignature() {
+        XCTAssertEqual(HostedImageType.mimeType(for: Data([0x89,0x50,0x4e,0x47,0x00])), "image/png")
+        XCTAssertEqual(HostedImageType.mimeType(for: Data([0xff,0xd8,0xff,0x00])), "image/jpeg")
+        XCTAssertEqual(HostedImageType.mimeType(for: Data([0,0,0,0,0x66,0x74,0x79,0x70,0,0,0,0])), "image/heic")
+    }
+
+    @MainActor
+    func testAccountCacheClearRemovesEveryStoredUserRecordAndImageBlob() async throws {
+        let container = try makeInMemoryContainer()
+        let context = container.mainContext
+        context.insert(Garment(label: "Private shirt", category: .tops, color: "Blue"))
+        context.insert(WishlistItem(label: "Private shoes", category: .shoes, color: "Black"))
+        context.insert(AssetBlob(name: "private.jpg", data: Data("private".utf8)))
+        try context.save()
+
+        await BackupService.clearCache(context: context)
+
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Garment>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<WishlistItem>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<AssetBlob>()).isEmpty)
+    }
+
     @MainActor
     func testBackupRoundTripIsNonDestructiveAndIdempotent() async throws {
         let source = try makeInMemoryContainer()

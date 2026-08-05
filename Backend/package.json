@@ -10,7 +10,8 @@
     "start": "node server.mjs",
     "worker": "node worker.mjs",
     "check": "node --check server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "test:staging": "node scripts/staging-smoke.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.55.0",

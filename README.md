@@ -21,6 +21,7 @@ SwiftData is an account-scoped offline read cache. Foreground sync pulls the clo
 - `render.yaml` — staging API and worker Blueprint
 - `Wearwell/` — iOS app and hosted client
 - `Config/Hosted.example.xcconfig` — public iOS environment template
+- `Backend/environments/` and `Config/Hosted.*.example.xcconfig` — credential-free local, staging, and production templates
 
 ## Security boundaries
 

@@ -301,11 +301,12 @@ final class HostedClient: ObservableObject {
         var ids: [String] = []
         for image in images {
             let digest = SHA256.hash(data: image).map { String(format: "%02x", $0) }.joined()
-            let declaration = UploadDeclaration(mimeType: "image/jpeg", byteCount: image.count, sha256: digest, kind: kind)
+            let mimeType = HostedImageType.mimeType(for: image)
+            let declaration = UploadDeclaration(mimeType: mimeType, byteCount: image.count, sha256: digest, kind: kind)
             let created = try HostedHTTP.decoder.decode(UploadResponse.self, from: await request(path: "v1/assets/upload", body: declaration))
             if !created.alreadyUploaded {
                 guard let signedURL = created.signedURL, let url = URL(string: signedURL) else { throw HostedError.invalidResponse }
-                var upload = URLRequest(url: url); upload.httpMethod = "PUT"; upload.setValue("image/jpeg", forHTTPHeaderField: "content-type"); upload.httpBody = image
+                var upload = URLRequest(url: url); upload.httpMethod = "PUT"; upload.setValue(mimeType, forHTTPHeaderField: "content-type"); upload.httpBody = image
                 let (_, response) = try await URLSession.shared.data(for: upload); try HostedHTTP.requireSuccess(response)
                 _ = try await request(path: "v1/assets/finalize", body: ["assetID": created.assetID])
             }
@@ -389,6 +390,16 @@ private enum HostedHTTP {
 }
 
 private enum HostedJWT { static func subject(_ token: String) -> String? { let values = token.split(separator: "."); guard values.count > 1 else { return nil }; var base = String(values[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/"); base += String(repeating: "=", count: (4 - base.count % 4) % 4); guard let data = Data(base64Encoded: base), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }; return object["sub"] as? String } }
+
+enum HostedImageType {
+    static func mimeType(for data: Data) -> String {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.starts(with: [0x89,0x50,0x4e,0x47]) { return "image/png" }
+        if bytes.starts(with: [0x52,0x49,0x46,0x46]), bytes.count >= 12, Array(bytes[8..<12]) == [0x57,0x45,0x42,0x50] { return "image/webp" }
+        if bytes.count >= 12, Array(bytes[4..<8]) == [0x66,0x74,0x79,0x70] { return "image/heic" }
+        return "image/jpeg"
+    }
+}
 
 private struct AppleTokenRequest: Codable { let provider: String; let idToken: String; let nonce: String? }
 private struct RefreshTokenRequest: Codable {

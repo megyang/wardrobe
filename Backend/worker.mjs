@@ -28,9 +28,10 @@ async function runSlot(slot) {
         await client.query("insert into usage_ledger (owner_id,job_id,kind,input_tokens,output_tokens,image_calls,latency_ms,model_version,estimated_cost_usd) values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (job_id) do nothing", [job.owner_id,job.id,job.kind,output.usage?.inputTokens||0,output.usage?.outputTokens||0,output.usage?.imageCalls||0,output.latencyMs,output.model,estimatedCost]);
       });
     } catch (error) {
-      const transient = /429|rate|timeout|temporar|ECONNRESET|5\d\d/i.test(error?.message || "");
+      const status = Number(error?.status || error?.statusCode || 0);
+      const transient = status === 429 || status >= 500 || /429|rate|timeout|temporar|ECONNRESET|5\d\d/i.test(error?.message || "");
       const retry = transient && Number(job.attempt_count) < 3;
-      await db.query("update jobs set state=$2,stage=$3,error_code=$4,error_message=$5,request=case when $2='queued' then request else jsonb_build_object('failed',true) end,available_at=case when $2='queued' then now()+make_interval(secs=>least(300,30*attempt_count)) else available_at end,lease_owner=null,lease_expires_at=null,updated_at=now() where id=$1", [job.id,retry?"queued":controller.signal.aborted?"cancelled":"failed",retry?"Waiting to retry":"Failed",transient?"transient":"workflow_error",String(error?.message||error).slice(0,500)]);
+      await db.query("update jobs set state=$2,stage=$3,error_code=$4,error_message=$5,request=case when $2='queued' then request else jsonb_build_object('failed',true) end,available_at=case when $2='queued' then now()+make_interval(secs=>least(300,15*power(2,greatest(attempt_count-1,0)))) else available_at end,lease_owner=null,lease_expires_at=null,updated_at=now() where id=$1", [job.id,retry?"queued":controller.signal.aborted?"cancelled":"failed",retry?"Waiting to retry":"Failed",transient?"transient":"workflow_error",String(error?.message||error).slice(0,500)]);
     } finally { clearInterval(heartbeat); }
   }
 }
@@ -44,8 +45,21 @@ async function purgeAccounts() {
   }
 }
 
+async function purgeUnreferencedAssets() {
+  const { rows } = await db.query(`update assets a set deleted_at=now(),updated_at=now()
+    where a.id in (select candidate.id from assets candidate left join asset_references ref on ref.asset_id=candidate.id
+      where ref.asset_id is null and candidate.deleted_at is null and candidate.created_at<now()-interval '7 days' limit 100)
+    returning id,storage_path`);
+  if (!rows.length) return;
+  await storage.remove(rows.map(row => row.storage_path));
+  await db.query("delete from assets where id=any($1::uuid[]) and deleted_at is not null", [rows.map(row => row.id)]);
+}
+
 const slots = Array.from({ length: config.workerConcurrency }, (_, index) => runSlot(index + 1));
-const purgeTimer = setInterval(() => purgeAccounts().catch(error => console.error(JSON.stringify({ level: "error", message: "Account purge failed", detail: error.message }))), 60_000); purgeTimer.unref();
+const purgeTimer = setInterval(async () => {
+  try { await purgeAccounts(); await purgeUnreferencedAssets(); }
+  catch (error) { console.error(JSON.stringify({ level: "error", message: "Maintenance failed", detail: error.message })); }
+}, 60_000); purgeTimer.unref();
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { stopping = true; clearInterval(purgeTimer); });
 await Promise.all(slots); await db.close();
 

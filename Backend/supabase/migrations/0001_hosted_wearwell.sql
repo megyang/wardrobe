@@ -11,7 +11,7 @@ create table public.profiles (
   style_limit integer not null default 50 check (style_limit >= 0),
   image_limit integer not null default 10 check (image_limit >= 0),
   storage_limit_bytes bigint not null default 1073741824 check (storage_limit_bytes >= 0),
-  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+  revision bigint not null default 1, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz
 );
 
 create table public.invite_codes (
@@ -50,10 +50,18 @@ create table public.assets (
 );
 create index assets_owner_updated on public.assets(owner_id,updated_at);
 
+create table public.asset_references (
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  asset_id uuid not null references public.assets(id) on delete cascade,
+  resource text not null, record_id uuid not null, created_at timestamptz not null default now(),
+  primary key(owner_id,asset_id,resource,record_id)
+);
+create index asset_references_asset on public.asset_references(asset_id);
+
 do $$
 declare table_name text;
 begin
-  foreach table_name in array array['garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_edits'] loop
+  foreach table_name in array array['garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_ratings','outfit_edits'] loop
     execute format('create table public.%I (
       id uuid primary key, owner_id uuid not null references public.profiles(id) on delete cascade,
       revision bigint not null default 1, data jsonb not null default ''{}''::jsonb,
@@ -113,7 +121,7 @@ begin
   for item in select * from (values
     ('garments','garments'),('wishlist_items','wishlist'),('outfits','outfits'),('visualizations','visualizations'),
     ('reference_photos','references'),('inspiration_looks','inspiration'),('style_profiles','style-profiles'),
-    ('import_drafts','imports'),('style_generations','style-generations'),('outfit_feedback','outfit-feedback'),('outfit_edits','outfit-edits')
+    ('import_drafts','imports'),('style_generations','style-generations'),('outfit_feedback','outfit-feedback'),('outfit_ratings','outfit-ratings'),('outfit_edits','outfit-edits')
   ) as values_table(table_name,resource_name) loop
     execute format('create trigger %I after insert or update on public.%I for each row execute function public.record_sync_change(%L)', 'sync_'||item.table_name,item.table_name,item.resource_name);
   end loop;
@@ -177,15 +185,16 @@ values('wearwell-assets','wearwell-assets',false,18874368,array['image/jpeg','im
 on conflict(id) do update set public=false,file_size_limit=excluded.file_size_limit,allowed_mime_types=excluded.allowed_mime_types;
 
 do $$ declare table_name text; begin
-  foreach table_name in array array['profiles','assets','garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_edits','jobs','usage_ledger','sync_changes','deletion_requests'] loop
+  foreach table_name in array array['profiles','assets','asset_references','garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_ratings','outfit_edits','jobs','usage_ledger','sync_changes','deletion_requests'] loop
     execute format('alter table public.%I enable row level security',table_name);
   end loop;
 end $$;
 
 create policy profiles_owner_select on public.profiles for select using(id=auth.uid());
 create policy assets_owner_all on public.assets for all using(owner_id=auth.uid()) with check(owner_id=auth.uid());
+create policy asset_references_owner_select on public.asset_references for select using(owner_id=auth.uid());
 do $$ declare table_name text; begin
-  foreach table_name in array array['garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_edits','jobs','usage_ledger','sync_changes','deletion_requests'] loop
+  foreach table_name in array array['garments','wishlist_items','outfits','visualizations','reference_photos','inspiration_looks','style_profiles','import_drafts','style_generations','outfit_feedback','outfit_ratings','outfit_edits','jobs','usage_ledger','sync_changes','deletion_requests'] loop
     execute format('create policy %I on public.%I for select using(owner_id=auth.uid())','owner_select_'||table_name,table_name);
   end loop;
 end $$;

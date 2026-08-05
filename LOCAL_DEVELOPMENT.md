@@ -69,6 +69,13 @@ xcodebuild -project Wearwell.xcodeproj -scheme Wearwell \
 
 Database integration tests require a running local Supabase stack. Use two users and verify that record reads, jobs, and signed asset URLs cannot cross owner boundaries; exhaust each quota; terminate the worker during a job and confirm lease recovery; and validate backup import plus deletion purge.
 
+After activating two staging beta users, run the checked-in isolation probe:
+
+```sh
+STAGING_API_URL=https://wearwell-api-staging.onrender.com \
+STAGING_USER_A_TOKEN=... STAGING_USER_B_TOKEN=... npm run test:staging
+```
+
 ## Staging first
 
 1. Create a staging Supabase project and apply `Backend/supabase/migrations`.

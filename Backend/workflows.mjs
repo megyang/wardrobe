@@ -12,7 +12,7 @@ const inventorySchema = {
       required: ["label", "category", "subcategory", "color", "confidence", "description", "observed", "unknowns", "fingerprint"],
       properties: {
         label: { type: "string" }, category: { type: "string", enum: ["tops", "bottoms", "outerwear", "dresses", "shoes", "accessories"] },
-        subcategory: { type: "string", enum: SUBCATEGORY_VALUES }, color: { type: "string" }, confidence: { type: "number", minimum: 0, maximum: 1 },
+        subcategory: { anyOf: [{ type: "string", enum: SUBCATEGORY_VALUES }, { type: "null" }] }, color: { type: "string" }, confidence: { type: "number", minimum: 0, maximum: 1 },
         description: { type: "string" }, observed: { type: "string" }, unknowns: { type: "array", items: { type: "string" } }, fingerprint: { type: "string" }
       }
     }}
@@ -40,15 +40,23 @@ export function createWorkflows({ db, storage, openai }) {
     const prompt = `${together} Exclude the person, background, bags, and jewelry. Describe only visible evidence and list unknown details. Never invent logos, text, pockets, trim, fasteners, materials, or construction. Choose the most specific supported subcategory.`;
     const analysis = await openai.structured({ name: "garment_inventory", prompt, images, schema: inventorySchema, userID: job.owner_id, signal });
     const items = [];
+    let imageUsage = { imageCalls: 0 };
+    let imageLatencyMs = 0;
     for (const item of analysis.value.items) {
       let catalogAssetID = null;
       if (item.confidence >= 0.45) {
-        const generated = await openai.editImage({ prompt: catalogPrompt(item), images, userID: job.owner_id, signal });
-        catalogAssetID = await saveGeneratedAsset(db, storage, job.owner_id, generated.bytes, "catalog");
+        try {
+          const generated = await openai.editImage({ prompt: catalogPrompt(item), images, userID: job.owner_id, signal });
+          catalogAssetID = await saveGeneratedAsset(db, storage, job.owner_id, generated.bytes, "catalog");
+          imageUsage = combineUsage(imageUsage, generated.usage); imageLatencyMs += generated.latencyMs;
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          // The iOS client preserves the local deterministic cutout path when an image edit is unavailable.
+        }
       }
       items.push({ ...item, catalogAssetID, modelVersion: analysis.model });
     }
-    return { result: { items }, usage: analysis.usage, model: analysis.model, latencyMs: analysis.latencyMs };
+    return { result: { items }, usage: combineUsage(analysis.usage, imageUsage), model: analysis.model, latencyMs: analysis.latencyMs + imageLatencyMs };
   }
 
   async function inspiration(job, signal) {

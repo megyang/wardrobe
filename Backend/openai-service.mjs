@@ -40,7 +40,7 @@ export function createOpenAIService(config) {
       }, { signal });
       const encoded = response.data?.[0]?.b64_json;
       if (!encoded) throw new Error("OpenAI did not return an image.");
-      return { bytes: Buffer.from(encoded, "base64"), usage: { imageCalls: 1 }, latencyMs: Date.now() - started, model: config.imageModel };
+      return { bytes: Buffer.from(encoded, "base64"), usage: { ...normalizeUsage(response.usage), imageCalls: 1 }, latencyMs: Date.now() - started, model: config.imageModel };
     }
   };
 }

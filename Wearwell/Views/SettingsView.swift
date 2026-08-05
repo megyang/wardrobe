@@ -77,6 +77,9 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .toolbar { Button("Done") { dismiss() } }
         .task { await refresh() }
+        .onChange(of: auth.isAuthenticated) { _, authenticated in
+            if authenticated { Task { await refresh(); try? await hosted.synchronizeCache(context: context, force: true) } }
+        }
         .alert("Delete your Wearwell account?", isPresented: $confirmingDeletion) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) { Task { await deleteAccount() } }

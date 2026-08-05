@@ -16,7 +16,7 @@ const resources = new Map([
   ["visualizations", "visualizations"], ["references", "reference_photos"],
   ["inspiration", "inspiration_looks"], ["style-profiles", "style_profiles"],
   ["imports", "import_drafts"], ["style-generations", "style_generations"],
-  ["outfit-feedback", "outfit_feedback"], ["outfit-edits", "outfit_edits"]
+  ["outfit-feedback", "outfit_feedback"], ["outfit-ratings", "outfit_ratings"], ["outfit-edits", "outfit_edits"]
 ]);
 const jobKinds = new Set(["analyze", "inspiration", "style", "assess", "recommend-item", "catalog-edit", "render"]);
 
@@ -83,11 +83,14 @@ async function dataRoute(req, res, user, url) {
     const body = await readJSON(req); const expected = Number(body.revision || 0);
     const { rows } = await db.query(`insert into ${table} (id,owner_id,data) values ($1,$2,$3) on conflict (id) do update set data=excluded.data, revision=${table}.revision+1, updated_at=now(), deleted_at=null where ${table}.owner_id=$2 and ${table}.revision=$4 returning id,revision,data,created_at,updated_at`, [id, user.id, body.data || {}, expected]);
     if (!rows[0]) throw httpError(409, "This record changed on another device. Sync and retry.", "revision_conflict");
+    await syncAssetReferences(db, user.id, resource, id, rows[0].data);
     return send(res, expected ? 200 : 201, rows[0]);
   }
   if (req.method === "DELETE" && id) {
     const { rowCount } = await db.query(`update ${table} set deleted_at=now(), updated_at=now(), revision=revision+1 where owner_id=$1 and id=$2 and deleted_at is null`, [user.id, id]);
-    if (!rowCount) throw httpError(404, "Record not found."); return send(res, 204, {});
+    if (!rowCount) throw httpError(404, "Record not found.");
+    await db.query("delete from asset_references where owner_id=$1 and resource=$2 and record_id=$3", [user.id,resource,id]);
+    return send(res, 204, {});
   }
   throw httpError(405, "Method not allowed.");
 }
@@ -119,8 +122,8 @@ async function downloadAsset(res, user, id) {
 }
 
 async function deleteAsset(res, user, id) {
-  const { rowCount } = await db.query("update assets set deleted_at=now(),updated_at=now() where id=$1 and owner_id=$2 and deleted_at is null", [id,user.id]);
-  if (!rowCount) throw httpError(404, "Asset not found."); send(res, 204, {});
+  const { rowCount } = await db.query("update assets set deleted_at=now(),updated_at=now() where id=$1 and owner_id=$2 and deleted_at is null and not exists(select 1 from asset_references where asset_id=assets.id)", [id,user.id]);
+  if (!rowCount) throw httpError(409, "Asset is missing or still referenced by a record."); send(res, 204, {});
 }
 
 async function jobsRoute(req, res, user, url) {
@@ -164,7 +167,8 @@ async function importBackup(req, res, user) {
       for (const record of records.slice(0, 5000)) {
         if (!/^[0-9a-f-]{36}$/i.test(String(record.id || ""))) throw httpError(400, "Backup contains an invalid record ID.");
         const data = replaceAssetNames(record.data || record, assetIDs);
-        await client.query(`insert into ${table} (id,owner_id,data) values ($1,$2,$3) on conflict (id) do update set data=excluded.data,revision=${table}.revision+1,updated_at=now(),deleted_at=null where ${table}.owner_id=$2`, [record.id,user.id,data]); count++;
+        await client.query(`insert into ${table} (id,owner_id,data) values ($1,$2,$3) on conflict (id) do update set data=excluded.data,revision=${table}.revision+1,updated_at=now(),deleted_at=null where ${table}.owner_id=$2`, [record.id,user.id,data]);
+        await syncAssetReferences(client, user.id, resource, record.id, data); count++;
       }
     }
   });
@@ -175,6 +179,21 @@ function replaceAssetNames(value, mapping) {
   if (Array.isArray(value)) return value.map(item => replaceAssetNames(item, mapping));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).map(([key,item]) => [key, /assetname$/i.test(key) && typeof item === "string" ? (mapping[item] || item) : replaceAssetNames(item,mapping)]));
+}
+
+async function syncAssetReferences(client, ownerID, resource, recordID, data) {
+  await client.query("delete from asset_references where owner_id=$1 and resource=$2 and record_id=$3", [ownerID,resource,recordID]);
+  const candidates = [...collectUUIDs(data)];
+  if (!candidates.length) return;
+  const { rows } = await client.query("select id from assets where owner_id=$1 and id=any($2::uuid[]) and deleted_at is null", [ownerID,candidates]);
+  for (const row of rows) await client.query("insert into asset_references(owner_id,asset_id,resource,record_id) values($1,$2,$3,$4) on conflict do nothing", [ownerID,row.id,resource,recordID]);
+}
+
+function collectUUIDs(value, result = new Set()) {
+  if (typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value)) result.add(value);
+  else if (Array.isArray(value)) for (const item of value) collectUUIDs(item,result);
+  else if (value && typeof value === "object") for (const item of Object.values(value)) collectUUIDs(item,result);
+  return result;
 }
 
 async function exportBackup(res, user) {

@@ -1,0 +1,3 @@
+WEARWELL_API_BASE_URL = https:/$()/wearwell-api-staging.onrender.com
+WEARWELL_SUPABASE_URL = https:/$()/YOUR-STAGING-PROJECT.supabase.co
+WEARWELL_SUPABASE_ANON_KEY = YOUR-STAGING-PUBLISHABLE-KEY
