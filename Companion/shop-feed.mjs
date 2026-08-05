@@ -27,3 +27,22 @@ export function shouldContinueShopFeed({ publishedCount, candidatesRemaining, la
   if (publishedCount < 40) return true;
   return publishedCount < 48 || lastWaveConfidence >= 0.55;
 }
+
+export function limitsToWomensAndUnisex(preferences) {
+  return preferences?.womensAndUnisexOnly !== false;
+}
+
+export function audienceConstrainedQuery(query, preferences) {
+  const value = String(query || "").trim();
+  return limitsToWomensAndUnisex(preferences) ? `women's or unisex clothing: ${value}` : value;
+}
+
+export function allowsShoppingAudience(product, preferences) {
+  if (!limitsToWomensAndUnisex(preferences)) return true;
+  const text = [product?.title, product?.description, product?.canonicalURL, ...(product?.tags || [])]
+    .filter(Boolean).join(" ").toLowerCase();
+  const includesAllowedAudience = /\b(?:women|woman|womens|women's|female|ladies|unisex)\b/.test(text);
+  const includesMensAudience = /\b(?:men|man|mens|men's|male|menswear)\b/.test(text) ||
+    /(?:^|[\/_-])mens?(?:[\/_-]|$)/.test(text);
+  return !includesMensAudience || includesAllowedAudience;
+}

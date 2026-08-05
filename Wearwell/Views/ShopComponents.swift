@@ -91,6 +91,11 @@ struct ShoppingPreferencesView: View {
                     }
                 }
             }
+            Section("Clothing") {
+                Toggle("Women's and unisex only", isOn: womensAndUnisexBinding)
+                Text("When enabled, Shop excludes products identified as men's clothing. Unisex pieces remain eligible.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("UCP catalogs") {
                 ForEach(ShoppingRetailer.ucp) { retailer in
                     Toggle(retailer.name, isOn: retailerBinding(retailer.domain))
@@ -153,6 +158,13 @@ struct ShoppingPreferencesView: View {
                 else if !enabled { value.preferredRetailers.removeAll { $0 == domain } }
             }
         })
+    }
+
+    private var womensAndUnisexBinding: Binding<Bool> {
+        Binding(
+            get: { profile.preferences.limitsToWomensAndUnisex },
+            set: { enabled in update { $0.womensAndUnisexOnly = enabled } }
+        )
     }
 
     private func listBinding(_ keyPath: WritableKeyPath<ShoppingProfileDTO, [String]>) -> Binding<String> {

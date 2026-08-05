@@ -23,6 +23,7 @@ final class ShopTests: XCTestCase {
         let snapshots = try destination.mainContext.fetch(FetchDescriptor<ShopFeedSnapshot>())
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.currency, "CAD")
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.sizes["tops"], "M")
+        XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.limitsToWomensAndUnisex, true)
         XCTAssertTrue(snapshots.isEmpty, "Shop feeds are disposable cache and must not be restored")
     }
 
@@ -41,6 +42,7 @@ final class ShopTests: XCTestCase {
     func testExistingShoppingProfilesReceiveNewRetailerDefaultsOnce() throws {
         let oldJSON = #"{"country":"US","currency":"USD","sizes":{},"budgets":{},"preferredRetailers":["aritzia.com"],"customRetailerDomains":[],"excludedCategories":[],"excludedColors":[],"excludedMaterials":[],"dismissedProductIDs":[]}"#.data(using: .utf8)!
         var profile = try JSONDecoder().decode(ShoppingProfileDTO.self, from: oldJSON)
+        XCTAssertTrue(profile.limitsToWomensAndUnisex, "Older profiles safely default to women's and unisex recommendations")
         XCTAssertTrue(ShoppingRetailer.applyBundledUpdates(to: &profile))
         XCTAssertTrue(profile.preferredRetailers.contains("aritzia.com"), "Customized existing choices are preserved")
         XCTAssertTrue(profile.preferredRetailers.contains("lewkin.com"))

@@ -11,6 +11,7 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var excludedCategories: [String] = []
     var excludedColors: [String] = []
     var excludedMaterials: [String] = []
+    var womensAndUnisexOnly: Bool? = true
     var dismissedProductIDs: [String] = []
     var bundledRetailerVersion: Int? = ShoppingRetailer.currentDefaultsVersion
 
@@ -20,6 +21,8 @@ struct ShoppingProfileDTO: Codable, Equatable {
             .compactMap(ShoppingRetailer.normalizedDomain)
             .filter { seen.insert($0).inserted }
     }
+
+    var limitsToWomensAndUnisex: Bool { womensAndUnisexOnly ?? true }
 }
 
 struct ShoppingRetailer: Identifiable, Equatable {

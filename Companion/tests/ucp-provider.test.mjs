@@ -76,7 +76,21 @@ test("provider discovers the profile, searches without wardrobe data, and return
   assert.equal(result.cursor, "next");
   const body = requests[1].options.body;
   assert.match(body, /layering top/);
+  assert.match(body, /women's or unisex/i);
   assert.doesNotMatch(body, /wardrobe|inspiration/i);
+});
+
+test("UCP catalog removes explicit men's products but keeps unisex products", async () => {
+  const mens = structuredClone(product);
+  mens.id = "gid://shopify/Product/mens"; mens.title = "Men's Woven Shirt"; mens.url = "https://shop.example/products/mens-woven-shirt";
+  const unisex = structuredClone(product);
+  unisex.id = "gid://shopify/Product/unisex"; unisex.title = "Unisex Woven Shirt"; unisex.url = "https://shop.example/products/unisex-woven-shirt";
+  const fetchImpl = async url => String(url).includes(".well-known")
+    ? new Response(JSON.stringify(profile), { status: 200, headers: { "content-type": "application/json" } })
+    : new Response(JSON.stringify({ result: { structuredContent: { products: [mens, unisex] } } }), { status: 200, headers: { "content-type": "application/json" } });
+  const provider = createUCPShopProvider({ fetchImpl, validateURL: async value => new URL(String(value)) });
+  const result = await provider.searchCatalog({ domain: "shop.example", query: "shirt", preferences: {} });
+  assert.deepEqual(result.products.map(item => item.sourceProductID), [unisex.id]);
 });
 
 test("unsafe advertised UCP endpoints are rejected before catalog calls", async () => {
@@ -85,7 +99,7 @@ test("unsafe advertised UCP endpoints are rejected before catalog calls", async 
     fetchImpl: async () => new Response(JSON.stringify(unsafe), { status: 200, headers: { "content-type": "application/json" } }),
     validateURL: async value => { const url = new URL(String(value)); if (url.protocol !== "https:") throw new Error("unsafe"); return url; }
   });
-  await assert.rejects(provider.profileFor("shop.example"), /unsafe/);
+  await assert.rejects(provider.profileFor("unsafe.example"), /unsafe/);
 });
 
 test("oversized UCP profiles are rejected before parsing", async () => {

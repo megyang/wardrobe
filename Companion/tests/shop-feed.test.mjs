@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendStableProducts, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendStableProducts, audienceConstrainedQuery, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -22,4 +22,12 @@ test("feed keeps building to forty and stops low-confidence expansion after fort
   assert.equal(shouldContinueShopFeed({ publishedCount: 48, candidatesRemaining: 12, lastWaveConfidence: 0.54 }), false);
   assert.equal(shouldContinueShopFeed({ publishedCount: 48, candidatesRemaining: 12, lastWaveConfidence: 0.8 }), true);
   assert.equal(shouldContinueShopFeed({ publishedCount: 60, candidatesRemaining: 10, lastWaveConfidence: 1 }), false);
+});
+
+test("women's and unisex preference excludes explicit men's products", () => {
+  assert.equal(allowsShoppingAudience({ title: "Men's Oxford Shirt" }, {}), false);
+  assert.equal(allowsShoppingAudience({ title: "Relaxed Unisex Oxford Shirt" }, {}), true);
+  assert.equal(allowsShoppingAudience({ title: "Oxford Shirt", canonicalURL: "https://shop.example/products/mens-oxford" }, {}), false);
+  assert.equal(allowsShoppingAudience({ title: "Men's Oxford Shirt" }, { womensAndUnisexOnly: false }), true);
+  assert.match(audienceConstrainedQuery("linen shirt", {}), /women's or unisex/i);
 });

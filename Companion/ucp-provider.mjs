@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { assertSafeHTTPSURL, normalizeCategory, normalizeDomain } from "./shop-discovery.mjs";
+import { allowsShoppingAudience, audienceConstrainedQuery, limitsToWomensAndUnisex } from "./shop-feed.mjs";
 
 // Shopify documents this profile only for development/testing. Keep it isolated
 // so a production build cannot accidentally hide the need for Wearwell's own URL.
@@ -138,11 +139,13 @@ export function createUCPShopProvider({
     const budgets = Object.values(preferences.budgets || {}).map(Number).filter(value => Number.isFinite(value) && value > 0);
     const filters = budgets.length ? { price: { max: Math.round(Math.max(...budgets) * 100) } } : undefined;
     const catalog = {
-      query: String(query || "").slice(0, 500),
+      query: audienceConstrainedQuery(query, preferences).slice(0, 500),
       context: {
         address_country: String(preferences.country || "US").toUpperCase(),
         currency: String(preferences.currency || "USD").toUpperCase(),
-        intent: "Find clothing matching the shopper's stated request and regional constraints."
+        intent: limitsToWomensAndUnisex(preferences)
+          ? "Find only women's or unisex clothing matching the shopper's stated request and regional constraints. Exclude men's clothing."
+          : "Find clothing matching the shopper's stated request and regional constraints."
       },
       pagination: { limit: Math.max(1, Math.min(12, limit)), ...(cursor ? { cursor } : {}) },
       ...(filters ? { filters } : {})
@@ -160,6 +163,7 @@ export function createUCPShopProvider({
     for (const value of result?.products || []) {
       try {
         const product = normalizeUCPProduct(value, profile.domain);
+        if (!allowsShoppingAudience(product, preferences)) continue;
         await validateURL(product.canonicalURL, [profile.domain]);
         await validateURL(product.imageURL);
         products.push(product);

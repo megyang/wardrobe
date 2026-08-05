@@ -20,6 +20,18 @@ test("shop providers enforce selected domains and deduplicate canonical products
   assert.equal(products.length, 1);
   assert.match(searchedPrompt, /only these retailer domains: shop\.example/i);
   assert.match(searchedPrompt, /untrusted data/i);
+  assert.match(searchedPrompt, /only women's or explicitly unisex/i);
   assert.doesNotMatch(searchedPrompt, /owned wardrobe|style profile/i);
   assert.deepEqual(verifiedDomains, [["shop.example"], ["shop.example"]]);
+});
+
+test("web discovery deterministically removes verified men's pages when the preference is enabled", async () => {
+  const provider = createLiveWebShopProvider({
+    search: async () => ({ candidates: [{ url: "https://shop.example/mens-shirt" }, { url: "https://shop.example/unisex-shirt" }] }),
+    verify: async url => url.includes("mens-")
+      ? { id: "mens", canonicalURL: url, title: "Men's Shirt" }
+      : { id: "unisex", canonicalURL: url, title: "Unisex Shirt" }
+  });
+  const products = await provider.discoverVerifiedProducts({ query: "shirt", domains: ["shop.example"], preferences: {} });
+  assert.deepEqual(products.map(item => item.id), ["unisex"]);
 });
