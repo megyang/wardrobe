@@ -212,6 +212,9 @@ struct CollageEditorView: View {
     private func save() {
         let savedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedTitle = savedTitle.isEmpty ? "Untitled outfit" : savedTitle
+        if origin == .aiStyle {
+            OutfitFeedbackStore.recordEdit(title: normalizedTitle, originalLayout: initialItems, finalLayout: items)
+        }
         if let existingOutfit {
             existingOutfit.applyEdits(title: normalizedTitle, layout: items)
         } else {

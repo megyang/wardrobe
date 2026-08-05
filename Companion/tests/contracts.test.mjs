@@ -40,7 +40,7 @@ test("inspiration analysis is a reusable fixed style vector", () => {
   assert.doesNotMatch(inspirationPrompt(), /identity.*infer/i);
 });
 
-test("fashion critic can only select known candidates", () => {
+test("fashion critic selects three known candidates", () => {
   const schema = outfitSelectionSchema(["candidate-a", "candidate-b", "candidate-c"]);
   const selection = schema.properties.selections;
   assert.equal(selection.minItems, 3);
@@ -50,8 +50,9 @@ test("fashion critic can only select known candidates", () => {
 
 test("outfits allow explicit two-piece torso layers but only one bottom and dress", () => {
   const wardrobe = [
-    { id: "top-1", category: "tops" }, { id: "top-2", category: "tops" },
-    { id: "bottom-1", category: "bottoms" }, { id: "bottom-2", category: "bottoms" },
+    { id: "top-1", category: "tops", subcategory: "long_sleeve", label: "Plain fitted long sleeve" },
+    { id: "top-2", category: "tops", subcategory: "tank_top" },
+    { id: "bottom-1", category: "bottoms", subcategory: "pants" }, { id: "bottom-2", category: "bottoms", subcategory: "shorts" },
     { id: "dress-1", category: "dresses" }, { id: "dress-2", category: "dresses" },
     { id: "coat", category: "outerwear" }
   ];
@@ -62,11 +63,37 @@ test("outfits allow explicit two-piece torso layers but only one bottom and dres
   assert.equal(hasValidOutfitComposition(["top-1", "top-2"], wardrobe), false);
   assert.equal(hasValidOutfitComposition(["bottom-1", "bottom-2"], wardrobe), false);
   assert.equal(hasValidOutfitComposition(["dress-1", "dress-2"], wardrobe), false);
-  assert.equal(hasValidOutfitComposition(["bottom-1", "coat"], wardrobe, "dresses"), true);
-  assert.equal(hasValidOutfitComposition(["dress-1", "coat"], wardrobe, "dresses"), false);
-  assert.equal(hasValidOutfitComposition(["top-1"], wardrobe, "tops", [
+  assert.equal(hasValidOutfitComposition(["bottom-1", "coat"], wardrobe, { category: "dresses" }), true);
+  assert.equal(hasValidOutfitComposition(["bottom-2", "coat"], wardrobe, { category: "dresses" }), true);
+  assert.equal(hasValidOutfitComposition(["dress-1", "coat"], wardrobe, { category: "dresses" }), false);
+  assert.equal(hasValidOutfitComposition(["top-1"], wardrobe, { category: "tops", subcategory: "tank_top" }, [
     { garmentID: "top-1", placement: "under" }, { garmentID: "__candidate__", placement: "main" }
   ]), true);
+});
+
+test("outfit rules leave visual taste to Luna but require explicit valid layering", () => {
+  const wardrobe = [
+    { id: "plain-long", category: "tops", subcategory: "long_sleeve", label: "Plain fitted long sleeve" },
+    { id: "ruffled-long", category: "tops", subcategory: "long_sleeve", label: "Ruffled printed long sleeve" },
+    { id: "tank", category: "tops", subcategory: "tank_top" },
+    { id: "tee", category: "tops", subcategory: "t_shirt" },
+    { id: "dress", category: "dresses" }
+  ];
+  assert.equal(hasValidOutfitComposition(["plain-long", "tank"], wardrobe, null, [
+    { garmentID: "plain-long", placement: "under" }, { garmentID: "tank", placement: "main" }
+  ]), true);
+  assert.equal(hasValidOutfitComposition(["ruffled-long", "tank"], wardrobe, null, [
+    { garmentID: "ruffled-long", placement: "under" }, { garmentID: "tank", placement: "main" }
+  ]), true);
+  assert.equal(hasValidOutfitComposition(["plain-long", "tee"], wardrobe, null, [
+    { garmentID: "plain-long", placement: "under" }, { garmentID: "tee", placement: "main" }
+  ]), true);
+  assert.equal(hasValidOutfitComposition(["dress", "tank"], wardrobe, null, [
+    { garmentID: "dress", placement: "under" }, { garmentID: "tank", placement: "main" }
+  ]), true);
+  assert.equal(hasValidOutfitComposition(["plain-long", "tank"], wardrobe, null, [
+    { garmentID: "plain-long", placement: "under" }, { garmentID: "missing", placement: "main" }
+  ]), false);
 });
 
 test("durable analysis jobs expose state without leaking their request", () => {

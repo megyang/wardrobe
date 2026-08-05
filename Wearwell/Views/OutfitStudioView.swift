@@ -5,6 +5,10 @@ import SwiftUI
 struct OutfitStudioView: View {
     @Binding var showSettings: Bool
     @Query(sort: \Outfit.updatedAt, order: .reverse) private var outfits: [Outfit]
+    @Query private var garments: [Garment]
+    @Query private var candidates: [WishlistItem]
+    @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
+    private var savedOutfits: [Outfit] { outfits.filter(\.belongsInOutfitLibrary) }
 
     var body: some View {
         ZStack {
@@ -18,13 +22,43 @@ struct OutfitStudioView: View {
                     NavigationLink { AIStyleView() } label: {
                         ModeCard(icon: "sparkles", title: "AI Style", detail: "Let AI select owned pieces by ID, then arrange them yourself in the collage editor.", color: WearwellTheme.coral)
                     }.buttonStyle(.plain)
-                    if !outfits.isEmpty {
-                        Text("Saved outfits").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        ForEach(outfits) { outfit in NavigationLink { OutfitDetailView(outfit: outfit) } label: { OutfitRow(outfit: outfit) }.buttonStyle(.plain) }
+                    if !savedOutfits.isEmpty {
+                        HStack(alignment: .center) {
+                            Text("Saved outfits").font(.title2.bold())
+                            Spacer()
+                            Picker("Saved outfit view", selection: $savedOutfitViewMode) {
+                                Label("Gallery", systemImage: "square.grid.2x2").tag("gallery")
+                                Label("Names", systemImage: "list.bullet").tag("names")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 205)
+                        }
+                        .padding(.top, 8)
+
+                        if savedOutfitViewMode == "names" {
+                            ForEach(savedOutfits) { outfit in
+                                NavigationLink { OutfitDetailView(outfit: outfit) } label: { OutfitRow(outfit: outfit) }
+                                    .buttonStyle(.plain)
+                            }
+                        } else {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
+                                ForEach(savedOutfits) { outfit in
+                                    NavigationLink { OutfitDetailView(outfit: outfit) } label: {
+                                        OutfitGalleryCard(outfit: outfit, garments: garments, candidate: candidate(for: outfit))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
                     }
                 }.padding()
             }
         }.toolbar { SettingsButton(isPresented: $showSettings) }
+    }
+
+    private func candidate(for outfit: Outfit) -> WishlistItem? {
+        guard let id = outfit.wishlistItemID else { return nil }
+        return candidates.first { $0.id == id }
     }
 }
 
@@ -52,12 +86,42 @@ private struct OutfitRow: View {
     }
 }
 
+private struct OutfitGalleryCard: View {
+    let outfit: Outfit
+    let garments: [Garment]
+    let candidate: WishlistItem?
+
+    var body: some View {
+        CollagePreview(items: outfit.layout, garments: garments, candidate: candidate)
+            .aspectRatio(0.8, contentMode: .fit)
+            .overlay(alignment: .topLeading) {
+                Image(systemName: outfit.origin == .manual ? "hand.draw" : outfit.origin == .aiStyle ? "sparkles" : "bag")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(WearwellTheme.sage)
+                    .padding(8)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(9)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Text("\(outfit.layout.count) pieces")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(WearwellTheme.ink)
+                    .padding(.horizontal, 9).padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(9)
+            }
+            .shadow(color: .black.opacity(0.06), radius: 14, y: 7)
+            .accessibilityLabel("\(outfit.title), \(outfit.layout.count) pieces")
+    }
+}
+
 struct AIStyleView: View {
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
     @Query private var inspirations: [InspirationLook]
+    @Query(sort: \Outfit.updatedAt, order: .reverse) private var savedLibraryOutfits: [Outfit]
     @Query(sort: \StyleGeneration.createdAt, order: .reverse) private var generations: [StyleGeneration]
     private let anchorGarmentID: UUID?
     @State private var occasion = "Everyday"
@@ -66,6 +130,7 @@ struct AIStyleView: View {
     @State private var request = ""
     @State private var anchorID: UUID?
     @State private var suggestions: [OutfitSuggestionDTO] = []
+    @State private var feedbackByCombination: [String: OutfitFeedbackDTO] = [:]
     @State private var working = false
     @State private var error: String?
 
@@ -111,15 +176,25 @@ struct AIStyleView: View {
             if !suggestions.isEmpty {
                 Section("Selected pieces — tap to arrange") {
                     ForEach(suggestions) { suggestion in
-                        NavigationLink {
-                            CollageEditorView(origin: .aiStyle, title: suggestion.title, rationale: suggestion.rationale, items: layout(for: suggestion))
-                        } label: { VStack(alignment: .leading) { Text(suggestion.title).font(.headline); Text(suggestion.rationale).font(.caption).foregroundStyle(.secondary); Label("Open \(suggestion.garmentIDs.count) pieces in manual editor", systemImage: "hand.draw").font(.caption2).foregroundStyle(WearwellTheme.sage) } }
+                        VStack(alignment: .leading, spacing: 10) {
+                            NavigationLink {
+                                CollageEditorView(origin: .aiStyle, title: suggestion.title, rationale: suggestion.rationale, items: layout(for: suggestion))
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(suggestion.title).font(.headline)
+                                    Text(suggestion.rationale).font(.caption).foregroundStyle(.secondary)
+                                    Label("Open \(suggestion.garmentIDs.count) pieces in manual editor", systemImage: "hand.draw").font(.caption2).foregroundStyle(WearwellTheme.sage)
+                                }
+                            }
+                            feedbackControls(for: suggestion)
+                        }
                     }
                 }
             }
         }
         .navigationTitle("AI Style").navigationBarTitleDisplayMode(.inline)
         .task {
+            refreshFeedback()
             if suggestions.isEmpty, let latest = generations.first(where: { $0.state == "complete" }) {
                 suggestions = latest.suggestions
             }
@@ -137,7 +212,18 @@ struct AIStyleView: View {
         context.insert(generation)
         try? context.save()
         do {
-            let job = try await companion.submitStyle(garments: garments, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfiles.first, inspirations: inspirations)
+            let recentOutfits = generations
+                .filter { $0.id != generation.id && $0.state == "complete" }
+                .prefix(6)
+                .flatMap(\.suggestions)
+            let savedExamples = savedLibraryOutfits.compactMap(SavedOutfitExampleDTO.init)
+            let job = try await companion.submitStyle(
+                garments: garments, occasion: occasion, weather: weather, mood: mood,
+                anchorID: anchorID, request: request, styleProfile: styleProfiles.first,
+                inspirations: inspirations, recentOutfits: recentOutfits,
+                outfitFeedback: OutfitFeedbackStore.all(), savedOutfits: savedExamples,
+                outfitEdits: OutfitFeedbackStore.allEdits()
+            )
             generation.remoteJobID = job.id
             apply(job, to: generation)
             try context.save()
@@ -186,6 +272,48 @@ struct AIStyleView: View {
     }
     private func layout(for suggestion: OutfitSuggestionDTO) -> [LayoutItem] {
         OutfitLayout.arranged(garmentIDs: suggestion.garmentIDs)
+    }
+
+    private func refreshFeedback() {
+        feedbackByCombination = Dictionary(uniqueKeysWithValues: OutfitFeedbackStore.all().map { ($0.combinationKey, $0) })
+    }
+
+    @ViewBuilder
+    private func feedbackControls(for suggestion: OutfitSuggestionDTO) -> some View {
+        let key = OutfitFeedbackStore.combinationKey(for: suggestion.garmentIDs)
+        let current = feedbackByCombination[key]
+        HStack(spacing: 10) {
+            Button {
+                if current?.rating == .loved { OutfitFeedbackStore.clear(for: suggestion) }
+                else { OutfitFeedbackStore.set(.loved, for: suggestion) }
+                refreshFeedback()
+            } label: {
+                Label("Love", systemImage: current?.rating == .loved ? "heart.fill" : "heart")
+            }
+            .buttonStyle(.bordered)
+            .tint(WearwellTheme.coral)
+
+            Menu {
+                ForEach(OutfitFeedbackStore.dislikeReasons, id: \.self) { reason in
+                    Button(reason) {
+                        OutfitFeedbackStore.set(.disliked, reason: reason, for: suggestion)
+                        refreshFeedback()
+                    }
+                }
+                if current?.rating == .disliked {
+                    Divider()
+                    Button("Clear rating") {
+                        OutfitFeedbackStore.clear(for: suggestion)
+                        refreshFeedback()
+                    }
+                }
+            } label: {
+                Label(current?.rating == .disliked ? (current?.reason ?? "Not for me") : "Not for me", systemImage: current?.rating == .disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+            }
+            .buttonStyle(.bordered)
+            .tint(current?.rating == .disliked ? WearwellTheme.coral : WearwellTheme.muted)
+        }
+        .font(.caption.weight(.semibold))
     }
 }
 
@@ -333,10 +461,17 @@ struct CollagePreview: View {
     let candidate: WishlistItem?
     var body: some View {
         GeometryReader { proxy in
+            let previewScale = min(proxy.size.width / 320, proxy.size.height / 400)
             ZStack {
                 WearwellTheme.paper
                 ForEach(items.sorted { $0.zIndex < $1.zIndex }) { item in
-                    if let name = name(for: item) { CollageAssetImage(name: name).frame(width: 150, height: 180).scaleEffect(item.scale).rotationEffect(.degrees(item.rotation)).position(x: item.x * proxy.size.width, y: item.y * proxy.size.height) }
+                    if let name = name(for: item) {
+                        CollageAssetImage(name: name)
+                            .frame(width: 150 * previewScale, height: 180 * previewScale)
+                            .scaleEffect(item.scale)
+                            .rotationEffect(.degrees(item.rotation))
+                            .position(x: item.x * proxy.size.width, y: item.y * proxy.size.height)
+                    }
                 }
             }.clipShape(RoundedRectangle(cornerRadius: 24))
         }

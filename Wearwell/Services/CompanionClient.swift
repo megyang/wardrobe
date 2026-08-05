@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import Network
 import Security
 import UIKit
 
@@ -45,6 +44,44 @@ private final class TrustDelegate: NSObject, URLSessionDelegate, @unchecked Send
         } else {
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
+    }
+}
+
+private final class CompanionDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    private let browser = NetServiceBrowser()
+    private var services: [ObjectIdentifier: NetService] = [:]
+    private let onResolved: (String, Int, String) -> Void
+
+    init(onResolved: @escaping (String, Int, String) -> Void) {
+        self.onResolved = onResolved
+        super.init()
+        browser.delegate = self
+    }
+
+    func start() {
+        browser.searchForServices(ofType: "_wearwell._tcp.", inDomain: "local.")
+    }
+
+    func stop() {
+        browser.stop()
+        services.values.forEach { $0.stop() }
+        services.removeAll()
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        services[ObjectIdentifier(service)] = service
+        service.delegate = self
+        service.resolve(withTimeout: 5)
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        guard let hostname = sender.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+              !hostname.isEmpty, sender.port > 0 else { return }
+        onResolved(hostname, sender.port, sender.name)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        services.removeValue(forKey: ObjectIdentifier(service))
     }
 }
 
@@ -94,7 +131,7 @@ final class CompanionClient: ObservableObject {
     @Published var discoveredHost: String?
 
     private let defaults = UserDefaults.standard
-    private var browser: NWBrowser?
+    private var discovery: CompanionDiscovery?
     private var host: String { defaults.string(forKey: "companionHost") ?? discoveredHost ?? "127.0.0.1" }
     private var port: Int { defaults.integer(forKey: "companionPort").nonzero ?? 8791 }
     private var token: String? { CompanionKeychain.string(for: "token") }
@@ -105,18 +142,19 @@ final class CompanionClient: ObservableObject {
 
     func startDiscovery() {
         status = .searching
-        let browser = NWBrowser(for: .bonjour(type: "_wearwell._tcp", domain: nil), using: .tcp)
-        browser.stateUpdateHandler = { _ in }
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let endpoint = results.first?.endpoint else { return }
+        discovery?.stop()
+        let discovery = CompanionDiscovery { [weak self] hostname, port, serviceName in
             Task { @MainActor in
-                guard case let .service(name, _, _, interface) = endpoint else { return }
-                self?.discoveredHost = name
-                self?.status = .found(interface?.name ?? name)
+                self?.discoveredHost = hostname
+                self?.status = .found(serviceName)
+                if self?.defaults.string(forKey: "companionHost") == nil {
+                    self?.defaults.set(hostname, forKey: "companionHost")
+                    self?.defaults.set(port, forKey: "companionPort")
+                }
             }
         }
-        browser.start(queue: DispatchQueue(label: "wearwell.discovery"))
-        self.browser = browser
+        discovery.start()
+        self.discovery = discovery
     }
 
     func configure(host: String, port: Int = 8791) {
@@ -126,11 +164,21 @@ final class CompanionClient: ObservableObject {
 
     func pair(code: String, deviceName: String = UIDevice.current.name) async throws {
         let delegate = TrustDelegate(expectedFingerprint: nil, allowFirstTrust: true)
-        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 12
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         var request = URLRequest(url: try CompanionEndpoint.url(host: host, port: port).appending(path: "v1/pair"))
-        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpMethod = "POST"; request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONEncoder().encode(["code": code, "deviceName": deviceName])
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let urlError as URLError where [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet].contains(urlError.code) {
+            throw ClientError.connection("Could not reach the Mac at \(host):\(port). Use the discovered .local hostname or the Mac's Wi-Fi IP, and make sure both devices are on the same network.")
+        }
         try requireOK(response, data: data)
         let result = try JSONDecoder().decode(PairResponse.self, from: data)
         guard CompanionKeychain.set(result.token, for: "token"),
@@ -173,13 +221,23 @@ final class CompanionClient: ObservableObject {
     }
 
     func submitAnalysis(imageData: Data, sourceURL: String? = nil) async throws -> AnalysisJobDTO {
+        try await submitAnalysis(imageData: [imageData], sourceURL: sourceURL, sameItem: false)
+    }
+
+    func submitAnalysis(imageData: [Data], sourceURL: String? = nil, sameItem: Bool) async throws -> AnalysisJobDTO {
         status = .busy
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue clothing import")
         defer {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             status = .available
         }
-        let payload = AnalyzeRequest(imageBase64: imageData.base64EncodedString(), sourceURL: sourceURL)
+        guard let first = imageData.first else { throw ClientError.invalidResponse }
+        let payload = AnalyzeRequest(
+            imageBase64: first.base64EncodedString(),
+            imageBase64s: imageData.map { $0.base64EncodedString() },
+            sameItem: sameItem,
+            sourceURL: sourceURL
+        )
         let data = try await send(path: "v1/jobs/analyze", body: payload)
         return try JSONDecoder().decode(AnalysisJobDTO.self, from: data)
     }
@@ -193,18 +251,21 @@ final class CompanionClient: ObservableObject {
         _ = try? await send(path: "v1/jobs/\(id)", method: "DELETE", body: Optional<String>.none)
     }
 
-    func recommend(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook]) async throws -> [OutfitSuggestionDTO] {
+    func recommend(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook], recentOutfits: [OutfitSuggestionDTO] = [], outfitFeedback: [OutfitFeedbackDTO] = [], savedOutfits: [SavedOutfitExampleDTO] = [], outfitEdits: [OutfitEditFeedbackDTO] = []) async throws -> [OutfitSuggestionDTO] {
         status = .busy; defer { status = .available }
         let summaries = garments.map(GarmentSummary.init)
         let query = [occasion, weather, mood, request].joined(separator: " ")
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: query).compactMap(InspirationExample.init)
-        let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples)
+        let garmentVisuals = await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 11 * 1024 * 1024)
+        let relevantIDs = Set(examples.map(\.id))
+        let inspirationVisuals = await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
+        let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples, recentOutfits: Array(recentOutfits.prefix(18)), outfitFeedback: Array(outfitFeedback.prefix(80)), savedOutfits: Array(savedOutfits.prefix(30)), outfitEdits: Array(outfitEdits.prefix(40)), garmentVisuals: garmentVisuals, inspirationVisuals: inspirationVisuals)
         let data = try await send(path: "v1/style", body: payload)
         let decoded = try JSONDecoder().decode(StyleResponse.self, from: data)
         return OutfitValidator.validateAI(decoded.outfits, garments: garments, anchorID: anchorID)
     }
 
-    func submitStyle(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook]) async throws -> StyleJobDTO {
+    func submitStyle(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook], recentOutfits: [OutfitSuggestionDTO] = [], outfitFeedback: [OutfitFeedbackDTO] = [], savedOutfits: [SavedOutfitExampleDTO] = [], outfitEdits: [OutfitEditFeedbackDTO] = []) async throws -> StyleJobDTO {
         status = .busy
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue outfit recommendations")
         defer {
@@ -214,7 +275,10 @@ final class CompanionClient: ObservableObject {
         let summaries = garments.map(GarmentSummary.init)
         let query = [occasion, weather, mood, request].joined(separator: " ")
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: query).compactMap(InspirationExample.init)
-        let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples)
+        let garmentVisuals = await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 11 * 1024 * 1024)
+        let relevantIDs = Set(examples.map(\.id))
+        let inspirationVisuals = await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
+        let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples, recentOutfits: Array(recentOutfits.prefix(18)), outfitFeedback: Array(outfitFeedback.prefix(80)), savedOutfits: Array(savedOutfits.prefix(30)), outfitEdits: Array(outfitEdits.prefix(40)), garmentVisuals: garmentVisuals, inspirationVisuals: inspirationVisuals)
         let data = try await send(path: "v1/jobs/style", body: payload)
         return try JSONDecoder().decode(StyleJobDTO.self, from: data)
     }
@@ -227,14 +291,18 @@ final class CompanionClient: ObservableObject {
     func assess(candidate: WishlistItem, garments: [Garment], styleProfile: StyleProfile?, inspirations: [InspirationLook]) async throws -> PurchaseAssessmentDTO {
         status = .busy; defer { status = .available }
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: "\(candidate.label) \(candidate.color) \(candidate.details)").compactMap(InspirationExample.init)
+        let relevantIDs = Set(examples.map(\.id))
         let payload = AssessmentRequest(
             candidate: CandidateSummary(id: candidate.id, label: candidate.label, category: candidate.categoryRaw, subcategory: candidate.subcategoryRaw, color: candidate.color, description: candidate.details),
             wardrobe: garments.map(GarmentSummary.init),
             styleProfile: styleProfile?.profile,
-            inspirationExamples: examples
+            inspirationExamples: examples,
+            candidateVisual: await visualReference(VisualSource(id: "__candidate__", assetName: candidate.catalogAssetName.isEmpty ? candidate.sourceAssetName : candidate.catalogAssetName)),
+            garmentVisuals: await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 10 * 1024 * 1024),
+            inspirationVisuals: await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         )
         let data = try await send(path: "v1/assess", body: payload)
-        return OutfitValidator.validatePurchase(try JSONDecoder().decode(PurchaseAssessmentDTO.self, from: data), garments: garments, candidateCategory: candidate.category)
+        return OutfitValidator.validatePurchase(try JSONDecoder().decode(PurchaseAssessmentDTO.self, from: data), garments: garments, candidate: candidate)
     }
 
     func submitAssessment(candidate: WishlistItem, garments: [Garment], styleProfile: StyleProfile?, inspirations: [InspirationLook]) async throws -> AssessmentJobDTO {
@@ -245,11 +313,15 @@ final class CompanionClient: ObservableObject {
             status = .available
         }
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: "\(candidate.label) \(candidate.color) \(candidate.details)").compactMap(InspirationExample.init)
+        let relevantIDs = Set(examples.map(\.id))
         let payload = AssessmentRequest(
             candidate: CandidateSummary(id: candidate.id, label: candidate.label, category: candidate.categoryRaw, subcategory: candidate.subcategoryRaw, color: candidate.color, description: candidate.details),
             wardrobe: garments.map(GarmentSummary.init),
             styleProfile: styleProfile?.profile,
-            inspirationExamples: examples
+            inspirationExamples: examples,
+            candidateVisual: await visualReference(VisualSource(id: "__candidate__", assetName: candidate.catalogAssetName.isEmpty ? candidate.sourceAssetName : candidate.catalogAssetName)),
+            garmentVisuals: await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 10 * 1024 * 1024),
+            inspirationVisuals: await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         )
         let data = try await send(path: "v1/jobs/assess", body: payload)
         return try JSONDecoder().decode(AssessmentJobDTO.self, from: data)
@@ -317,6 +389,23 @@ final class CompanionClient: ObservableObject {
         return try JSONDecoder().decode(MacBackupStatus.self, from: data)
     }
 
+    private func visualReference(_ source: VisualSource) async -> VisualReference? {
+        guard let data = try? await AssetStore.shared.visualReferenceData(named: source.assetName) else { return nil }
+        return VisualReference(id: source.id, imageBase64: data.base64EncodedString())
+    }
+
+    private func visualReferences(_ sources: [VisualSource], byteBudget: Int) async -> [VisualReference] {
+        var result: [VisualReference] = []
+        var used = 0
+        for source in sources {
+            guard let data = try? await AssetStore.shared.visualReferenceData(named: source.assetName),
+                  used + data.count <= byteBudget else { continue }
+            result.append(VisualReference(id: source.id, imageBase64: data.base64EncodedString()))
+            used += data.count
+        }
+        return result
+    }
+
     private func send<T: Encodable>(path: String, method: String = "POST", body: T?) async throws -> Data {
         guard isPaired else { throw ClientError.notPaired }
         let delegate = TrustDelegate(expectedFingerprint: fingerprint)
@@ -343,8 +432,8 @@ final class CompanionClient: ObservableObject {
 }
 
 private extension Int { var nonzero: Int? { self == 0 ? nil : self } }
-enum ClientError: LocalizedError { case invalidResponse, invalidConfiguration, notPaired, expired, jobNotFound, server(String)
-    var errorDescription: String? { switch self { case .invalidResponse: "Invalid companion response"; case .invalidConfiguration: "Enter a valid Mac hostname and port"; case .notPaired: "Pair with your Mac companion first"; case .expired: "Pairing expired"; case .jobNotFound: "Job not found or expired"; case .server(let value): value } }
+enum ClientError: LocalizedError { case invalidResponse, invalidConfiguration, notPaired, expired, jobNotFound, connection(String), server(String)
+    var errorDescription: String? { switch self { case .invalidResponse: "Invalid companion response"; case .invalidConfiguration: "Enter a valid Mac hostname and port"; case .notPaired: "Pair with your Mac companion first"; case .expired: "Pairing expired"; case .jobNotFound: "Job not found or expired"; case .connection(let value), .server(let value): value } }
 }
 
 enum CompanionEndpoint {
@@ -366,7 +455,12 @@ enum CompanionEndpoint {
 private struct PairResponse: Codable { let token: String; let certificateFingerprint: String }
 private struct HealthResponse: Codable { let status: String; let auth: String; let model: String; let serviceTier: String? }
 private struct ErrorResponse: Codable { let error: String }
-private struct AnalyzeRequest: Codable { let imageBase64: String; let sourceURL: String? }
+private struct AnalyzeRequest: Codable {
+    let imageBase64: String
+    var imageBase64s: [String]? = nil
+    var sameItem: Bool? = nil
+    let sourceURL: String?
+}
 private struct InspirationRequest: Codable { let imageBase64: String }
 private struct BackupManifestRequest: Codable { let manifestBase64: String }
 private struct BackupPrepareResponse: Codable { let missingHashes: [String] }
@@ -460,6 +554,8 @@ private struct GarmentSummary: Codable {
     }
 }
 private struct CandidateSummary: Codable { let id: UUID; let label, category: String; let subcategory: String?; let color, description: String }
+private struct VisualSource { let id, assetName: String }
+private struct VisualReference: Codable { let id, imageBase64: String }
 private struct InspirationExample: Codable {
     let id: UUID
     let summary: String
@@ -476,6 +572,24 @@ private struct InspirationExample: Codable {
         focalPoints = analysis.focalPoints ?? []; stylingRules = analysis.stylingRules ?? []
     }
 }
+struct SavedOutfitExampleDTO: Codable {
+    let id: UUID
+    let title: String
+    let rationale: String
+    let origin: String
+    let garmentIDs: [UUID]
+    let layout: [LayoutItem]
+    let updatedAt: Date
+
+    init?(_ outfit: Outfit) {
+        guard outfit.belongsInOutfitLibrary else { return nil }
+        var seen = Set<UUID>()
+        let ids = outfit.layout.compactMap(\.garmentID).filter { seen.insert($0).inserted }
+        guard !ids.isEmpty else { return nil }
+        id = outfit.id; title = outfit.title; rationale = outfit.rationale; origin = outfit.originRaw
+        garmentIDs = ids; layout = outfit.layout; updatedAt = outfit.updatedAt
+    }
+}
 private struct StyleRequest: Codable {
     let wardrobe: [GarmentSummary]
     let occasion, weather, mood: String
@@ -483,6 +597,11 @@ private struct StyleRequest: Codable {
     let request: String
     let styleProfile: StyleProfileDTO?
     let inspirationExamples: [InspirationExample]
+    let recentOutfits: [OutfitSuggestionDTO]
+    let outfitFeedback: [OutfitFeedbackDTO]
+    let savedOutfits: [SavedOutfitExampleDTO]
+    let outfitEdits: [OutfitEditFeedbackDTO]
+    let garmentVisuals, inspirationVisuals: [VisualReference]
 }
 struct StyleResponse: Codable { let outfits: [OutfitSuggestionDTO] }
 private struct AssessmentRequest: Codable {
@@ -490,6 +609,8 @@ private struct AssessmentRequest: Codable {
     let wardrobe: [GarmentSummary]
     let styleProfile: StyleProfileDTO?
     let inspirationExamples: [InspirationExample]
+    let candidateVisual: VisualReference?
+    let garmentVisuals, inspirationVisuals: [VisualReference]
 }
 private struct RenderRequest: Codable { let mode, referenceBase64: String; let garmentImagesBase64: [String] }
 struct RenderResponse: Codable { let imageBase64: String }

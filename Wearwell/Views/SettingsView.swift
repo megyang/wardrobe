@@ -89,7 +89,12 @@ struct SettingsView: View {
             }
             Section("Connection") {
                 LabeledContent("Status") { StatusPill(text: companion.status.label, color: companion.status == .available ? WearwellTheme.sage : WearwellTheme.coral) }
-                if let found = companion.discoveredHost { LabeledContent("Discovered") { Text(found) } }
+                if let found = companion.discoveredHost {
+                    LabeledContent("Discovered") { Text(found) }
+                    if host != found {
+                        Button("Use discovered Mac") { host = found }
+                    }
+                }
                 TextField("Mac hostname or IP", text: $host).textInputAutocapitalization(.never).keyboardType(.URL)
                 TextField("Port", text: $port).keyboardType(.numberPad)
                 TextField("Six-digit pairing code", text: $code).keyboardType(.numberPad)
@@ -109,6 +114,9 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .toolbar { Button("Done") { dismiss() } }
         .task { await macBackups.refreshStatus(companion: companion) }
+        .onChange(of: companion.discoveredHost) { _, discoveredHost in
+            if host.isEmpty, let discoveredHost { host = discoveredHost }
+        }
         .alert("Recover saved clothing images?", isPresented: $confirmingRecovery) {
             Button("Cancel", role: .cancel) {}
             Button("Recover") { recoverOrphanedImages() }

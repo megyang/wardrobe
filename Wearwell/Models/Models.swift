@@ -171,6 +171,13 @@ enum OutfitLayout {
     var createdAt: Date
     var modelVersion: String
     var promptVersion: String
+    var imageRegenerationJobID: String?
+    var imageRegenerationState: String?
+    var imageRegenerationStage: String?
+    var imageRegenerationError: String?
+    var pendingRegenerationSourceAssetName: String?
+    var pendingRegenerationCatalogAssetName: String?
+    var pendingRegenerationAnalysisJSON: Data?
 
     var category: GarmentCategory {
         get { GarmentCategory(rawValue: categoryRaw) ?? .tops }
@@ -289,6 +296,12 @@ enum OutfitLayout {
     var layout: [LayoutItem] {
         get { (try? JSONDecoder().decode([LayoutItem].self, from: layoutJSON)) ?? [] }
         set { layoutJSON = (try? JSONEncoder().encode(newValue)) ?? Data() }
+    }
+
+    /// Purchase-test combinations are scoped to their candidate in Buy? and are
+    /// not part of the user's normal saved-outfit library.
+    var belongsInOutfitLibrary: Bool {
+        origin != .purchaseTest && wishlistItemID == nil
     }
 
     func contains(garmentID: UUID) -> Bool {
@@ -445,6 +458,8 @@ struct StyleProfileDTO: Codable, Equatable {
     var id: UUID
     var sourceAssetName: String
     var sourceURL: String?
+    var additionalSourceAssetNamesJSON: Data = Data()
+    var combinesSourcePhotos: Bool = false
     var createdAt: Date
     var state: String
     var remoteJobID: String?
@@ -462,8 +477,22 @@ struct StyleProfileDTO: Codable, Equatable {
         set { resultJSON = try? JSONEncoder().encode(newValue); updatedAt = .now }
     }
 
-    init(sourceAssetName: String, sourceURL: String? = nil, state: String = "pending", remoteJobID: String? = nil) {
+    var sourceAssetNames: [String] {
+        get {
+            let additional = (try? JSONDecoder().decode([String].self, from: additionalSourceAssetNamesJSON)) ?? []
+            return [sourceAssetName] + additional
+        }
+        set {
+            guard let first = newValue.first else { return }
+            sourceAssetName = first
+            additionalSourceAssetNamesJSON = (try? JSONEncoder().encode(Array(newValue.dropFirst()))) ?? Data()
+        }
+    }
+
+    init(sourceAssetName: String, additionalSourceAssetNames: [String] = [], combinesSourcePhotos: Bool = false, sourceURL: String? = nil, state: String = "pending", remoteJobID: String? = nil) {
         id = UUID(); self.sourceAssetName = sourceAssetName; self.sourceURL = sourceURL; createdAt = .now; self.state = state
+        additionalSourceAssetNamesJSON = (try? JSONEncoder().encode(additionalSourceAssetNames)) ?? Data()
+        self.combinesSourcePhotos = combinesSourcePhotos
         self.remoteJobID = remoteJobID; updatedAt = .now
     }
 }

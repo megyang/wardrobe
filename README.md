@@ -58,7 +58,8 @@ npm start
 Choose **Sign in with ChatGPT** during `codex login`. On first start the helper
 prints a six-digit pairing code and advertises `_wearwell._tcp` on the local
 network. In Wearwell, open Settings, enter the Mac's local hostname or IP and
-the printed code, then pair. The discovered service name is shown as a hint.
+the printed code, then pair. Discovery resolves the service to a usable `.local`
+hostname; tap **Use discovered Mac** instead of entering the service display name.
 
 The companion uses HTTPS with a generated local certificate. Wearwell pins the
 certificate and stores its device token in the iPhone Keychain, limits uploads,

@@ -20,6 +20,18 @@ private struct ReviewCandidate: Identifiable {
     var showsEditor = false
 }
 
+enum PhotoImportMode: String, CaseIterable, Identifiable {
+    case separateItems
+    case sameItem
+    var id: String { rawValue }
+    var title: String { self == .separateItems ? "Different items" : "One item, multiple views" }
+}
+
+struct StagedImportPhoto: Identifiable {
+    let id = UUID()
+    var data: Data
+}
+
 struct AddClothesView: View {
     private static let importTimeout: TimeInterval = 24 * 60 * 60
 
@@ -30,6 +42,10 @@ struct AddClothesView: View {
     @Query private var garments: [Garment]
     @Query(sort: \ImportDraft.createdAt) private var drafts: [ImportDraft]
     @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var photoImportMode: PhotoImportMode = .separateItems
+    @State private var stagedImportMode: PhotoImportMode = .separateItems
+    @State private var stagedPhotos: [StagedImportPhoto] = []
+    @State private var showPhotoPreflight = false
     @State private var showCamera = false
     @State private var urlText = ""
     @State private var importingURL = false
@@ -44,7 +60,7 @@ struct AddClothesView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     EditorialHeader(eyebrow: "Build your closet", title: "Add clothes", subtitle: "Wearwell sees only the images you explicitly choose.")
-                    PhotosPicker(selection: $pickerItems, maxSelectionCount: 12, matching: .images) { ImportCard(icon: "photo.on.rectangle.angled", title: "Choose photos", detail: "Detect every visible garment, then review each one.") }
+                    photoImportCard
                     Button { showCamera = true } label: { ImportCard(icon: "camera", title: "Take a photo", detail: "Photograph one item or a complete worn look.") }.buttonStyle(.plain)
                     urlImportCard
                     if working {
@@ -62,6 +78,14 @@ struct AddClothesView: View {
         }
         .toolbar { SettingsButton(isPresented: $showSettings) }
         .onChange(of: pickerItems) { _, items in Task { await importItems(items) } }
+        .sheet(isPresented: $showPhotoPreflight, onDismiss: { stagedPhotos = [] }) {
+            PhotoImportPreflight(photos: $stagedPhotos, mode: stagedImportMode) {
+                showPhotoPreflight = false
+                let photos = stagedPhotos
+                stagedPhotos = []
+                Task { await processStagedPhotos(photos, mode: stagedImportMode) }
+            }
+        }
         .sheet(isPresented: $showCamera) { CameraPicker { image in showCamera = false; guard let data = image.jpegData(compressionQuality: 0.9) else { return }; Task { await analyze(data: data, sourceURL: nil) } } }
         .task {
             await consumeShareInbox()
@@ -71,6 +95,27 @@ struct AddClothesView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refreshDrafts() } } }
+    }
+
+    private var photoImportCard: some View {
+        let chooseTitle = photoImportMode == .separateItems ? "Choose photos" : "Choose views of this item"
+        return VStack(alignment: .leading, spacing: 14) {
+            Label("Add from your photos", systemImage: "photo.on.rectangle.angled").font(.headline)
+            Picker("How should these photos be processed?", selection: $photoImportMode) {
+                ForEach(PhotoImportMode.allCases) { mode in Text(mode.title).tag(mode) }
+            }
+            .pickerStyle(.segmented)
+            Text(photoImportMode == .separateItems
+                 ? "Choose a large batch. Each photo is processed separately."
+                 : "Choose several angles of the same piece. They’ll be analyzed together as one item.")
+                .font(.caption).foregroundStyle(.secondary)
+            PhotosPicker(selection: $pickerItems, maxSelectionCount: 12, matching: .images) {
+                Label(chooseTitle, systemImage: "plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(20).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var urlImportCard: some View {
@@ -189,8 +234,30 @@ struct AddClothesView: View {
     }
 
     private func importItems(_ items: [PhotosPickerItem]) async {
-        for item in items { if let data = try? await item.loadTransferable(type: Data.self) { await analyze(data: data, sourceURL: nil) } }
+        let loaded = await withTaskGroup(of: (Int, StagedImportPhoto)?.self) { group in
+            for (index, item) in items.enumerated() {
+                group.addTask {
+                    guard let data = try? await item.loadTransferable(type: Data.self), UIImage(data: data) != nil else { return nil }
+                    return (index, StagedImportPhoto(data: CropUtilities.preparedUploadData(data) ?? data))
+                }
+            }
+            var result: [(Int, StagedImportPhoto)] = []
+            for await photo in group { if let photo { result.append(photo) } }
+            return result.sorted { $0.0 < $1.0 }.map(\.1)
+        }
         pickerItems = []
+        guard !loaded.isEmpty else { return }
+        stagedPhotos = loaded
+        stagedImportMode = photoImportMode
+        showPhotoPreflight = true
+    }
+
+    private func processStagedPhotos(_ photos: [StagedImportPhoto], mode: PhotoImportMode) async {
+        if mode == .sameItem {
+            await analyze(data: photos.map(\.data), sourceURL: nil, sameItem: true)
+        } else {
+            for photo in photos { await analyze(data: [photo.data], sourceURL: nil, sameItem: false) }
+        }
     }
     private func reviewBinding(for snapshot: ReviewCandidate) -> Binding<ReviewCandidate>? {
         guard reviews.contains(where: { $0.id == snapshot.id }) else { return nil }
@@ -226,14 +293,23 @@ struct AddClothesView: View {
         }
     }
     private func analyze(data: Data, sourceURL: String?) async {
+        await analyze(data: [data], sourceURL: sourceURL, sameItem: false)
+    }
+
+    private func analyze(data: [Data], sourceURL: String?, sameItem: Bool) async {
+        guard !data.isEmpty else { return }
         error = nil
+        var sources: [String] = []
         do {
-            let source = try await AssetStore.shared.save(data, preferredExtension: "jpg")
-            let draft = ImportDraft(sourceAssetName: source, sourceURL: sourceURL)
+            for imageData in data { sources.append(try await AssetStore.shared.save(imageData, preferredExtension: "jpg")) }
+            let draft = ImportDraft(sourceAssetName: sources[0], additionalSourceAssetNames: Array(sources.dropFirst()), combinesSourcePhotos: sameItem, sourceURL: sourceURL)
             context.insert(draft); try context.save()
             if companion.status == .available { await submit(draft) }
             else { draft.errorMessage = "Waiting for the paired Mac companion."; try? context.save() }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            for source in sources { await AssetStore.shared.remove(named: source) }
+            self.error = error.localizedDescription
+        }
     }
     private func saveConfirmed() async {
         let reviewedDraftIDs = Set(reviews.map(\.draftID))
@@ -249,7 +325,7 @@ struct AddClothesView: View {
             } catch { self.error = error.localizedDescription }
         }
         for draft in drafts where reviewedDraftIDs.contains(draft.id) {
-            await AssetStore.shared.remove(named: draft.sourceAssetName)
+            for name in draft.sourceAssetNames { await AssetStore.shared.remove(named: name) }
             context.delete(draft)
         }
         try? context.save(); reviews = []
@@ -259,9 +335,16 @@ struct AddClothesView: View {
         guard companion.status == .available else { draft.state = "pending"; draft.errorMessage = "Waiting for the paired Mac companion."; try? context.save(); return }
         do {
             if draft.state == "failed" || draft.remoteJobID == nil { draft.createdAt = .now }
-            let data = try await AssetStore.shared.data(named: draft.sourceAssetName)
+            let data = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                for (index, name) in draft.sourceAssetNames.enumerated() {
+                    group.addTask { (index, try await AssetStore.shared.data(named: name)) }
+                }
+                var values: [(Int, Data)] = []
+                for try await value in group { values.append(value) }
+                return values.sorted { $0.0 < $1.0 }.map(\.1)
+            }
             draft.errorMessage = nil; draft.state = "submitting"; try context.save()
-            let job = try await companion.submitAnalysis(imageData: data, sourceURL: draft.sourceURL)
+            let job = try await companion.submitAnalysis(imageData: data, sourceURL: draft.sourceURL, sameItem: draft.combinesSourcePhotos)
             draft.remoteJobID = job.id; apply(job, to: draft); try context.save()
         } catch {
             draft.state = "pending"; draft.errorMessage = error.localizedDescription; draft.updatedAt = .now; try? context.save()
@@ -378,7 +461,7 @@ struct AddClothesView: View {
     }
 
     private func discardDraft(_ draft: ImportDraft) async {
-        await AssetStore.shared.remove(named: draft.sourceAssetName)
+        for name in draft.sourceAssetNames { await AssetStore.shared.remove(named: name) }
         reviews.removeAll { $0.draftID == draft.id }
         context.delete(draft); try? context.save()
     }
@@ -404,5 +487,206 @@ struct CameraPicker: UIViewControllerRepresentable {
         init(completion: @escaping (UIImage) -> Void) { self.completion = completion }
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) { if let image = info[.originalImage] as? UIImage { completion(image) }; picker.dismiss(animated: true) }
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { picker.dismiss(animated: true) }
+    }
+}
+
+struct PhotoImportPreflight: View {
+    @Binding var photos: [StagedImportPhoto]
+    let mode: PhotoImportMode
+    let process: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingPhoto: StagedImportPhoto?
+
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(mode == .separateItems
+                             ? "\(photos.count) photo\(photos.count == 1 ? "" : "s") ready"
+                             : "\(photos.count) view\(photos.count == 1 ? "" : "s") of one item")
+                            .font(.title2.bold())
+                        Text("Cropping is optional. Crop only the photos that need it, or process the whole selection now.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(photos) { photo in
+                            VStack(spacing: 7) {
+                                if let image = UIImage(data: photo.data) {
+                                    Image(uiImage: image).resizable().scaledToFill()
+                                        .frame(height: 132).frame(maxWidth: .infinity)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                Button { editingPhoto = photo } label: {
+                                    Label("Crop", systemImage: "crop").frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered).font(.caption.weight(.semibold))
+                            }
+                        }
+                    }
+                    Button {
+                        process()
+                    } label: {
+                        Label(mode == .separateItems ? "Process all photos" : "Process as one item", systemImage: "sparkles")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    Text(mode == .separateItems
+                         ? "Each photo will remain its own import job."
+                         : "All views will be used together to identify one piece of clothing.")
+                        .frame(maxWidth: .infinity).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.padding()
+            }
+            .background(WearwellTheme.cream)
+            .navigationTitle("Review photos").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .sheet(item: $editingPhoto) { photo in
+                CropPhotoView(imageData: photo.data) { cropped in
+                    guard let index = photos.firstIndex(where: { $0.id == photo.id }) else { return }
+                    photos[index].data = cropped
+                }
+            }
+        }
+    }
+}
+
+private struct CropPhotoView: View {
+    let imageData: Data
+    let apply: (Data) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var cropRect = CGRect(x: 0.06, y: 0.06, width: 0.88, height: 0.88)
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                if let image = UIImage(data: imageData) {
+                    GeometryReader { proxy in
+                        let fitted = aspectFitRect(image.size, in: proxy.size)
+                        ZStack {
+                            Image(uiImage: image).resizable().scaledToFit().frame(width: fitted.width, height: fitted.height)
+                                .position(x: fitted.midX, y: fitted.midY)
+                            Path { path in
+                                path.addRect(fitted)
+                                path.addRect(absoluteCrop(in: fitted))
+                            }
+                            .fill(.black.opacity(0.48), style: FillStyle(eoFill: true))
+                            Rectangle().stroke(.white, lineWidth: 2).frame(width: absoluteCrop(in: fitted).width, height: absoluteCrop(in: fitted).height)
+                                .position(x: absoluteCrop(in: fitted).midX, y: absoluteCrop(in: fitted).midY)
+                            ForEach(CropCorner.allCases) { corner in cropHandle(corner, in: fitted) }
+                        }
+                    }
+                    .padding(.horizontal).frame(maxHeight: .infinity)
+                    Text("Drag the corner handles to keep the part of the photo you want.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                } else {
+                    ContentUnavailableView("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                }
+            }
+            .background(Color.black.opacity(0.94).ignoresSafeArea())
+            .navigationTitle("Crop photo").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        if let data = CropUtilities.crop(imageData, to: cropRect) {
+                            apply(CropUtilities.preparedUploadData(data) ?? data)
+                        }
+                        dismiss()
+                    }.fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private func cropHandle(_ corner: CropCorner, in imageRect: CGRect) -> some View {
+        let point = corner.point(for: absoluteCrop(in: imageRect))
+        return Circle().fill(.white).overlay(Circle().stroke(.black.opacity(0.3)))
+            .frame(width: 28, height: 28).position(point)
+            .gesture(DragGesture().onChanged { value in update(corner, to: value.location, in: imageRect) })
+    }
+
+    private func update(_ corner: CropCorner, to point: CGPoint, in imageRect: CGRect) {
+        let minimum: CGFloat = 0.12
+        let x = min(1, max(0, (point.x - imageRect.minX) / imageRect.width))
+        let y = min(1, max(0, (point.y - imageRect.minY) / imageRect.height))
+        let maxX = cropRect.maxX, maxY = cropRect.maxY
+        switch corner {
+        case .topLeft:
+            cropRect = CGRect(x: min(x, maxX - minimum), y: min(y, maxY - minimum), width: maxX - min(x, maxX - minimum), height: maxY - min(y, maxY - minimum))
+        case .topRight:
+            let newMaxX = max(x, cropRect.minX + minimum)
+            cropRect = CGRect(x: cropRect.minX, y: min(y, maxY - minimum), width: newMaxX - cropRect.minX, height: maxY - min(y, maxY - minimum))
+        case .bottomLeft:
+            let newMaxY = max(y, cropRect.minY + minimum)
+            cropRect = CGRect(x: min(x, maxX - minimum), y: cropRect.minY, width: maxX - min(x, maxX - minimum), height: newMaxY - cropRect.minY)
+        case .bottomRight:
+            cropRect.size = CGSize(width: max(x, cropRect.minX + minimum) - cropRect.minX, height: max(y, cropRect.minY + minimum) - cropRect.minY)
+        }
+    }
+
+    private func absoluteCrop(in rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX + cropRect.minX * rect.width, y: rect.minY + cropRect.minY * rect.height, width: cropRect.width * rect.width, height: cropRect.height * rect.height)
+    }
+
+    private func aspectFitRect(_ imageSize: CGSize, in container: CGSize) -> CGRect {
+        let scale = min(container.width / imageSize.width, container.height / imageSize.height)
+        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(x: (container.width - size.width) / 2, y: (container.height - size.height) / 2, width: size.width, height: size.height)
+    }
+}
+
+private enum CropCorner: CaseIterable, Identifiable {
+    case topLeft, topRight, bottomLeft, bottomRight
+    var id: Self { self }
+    func point(for rect: CGRect) -> CGPoint {
+        switch self {
+        case .topLeft: CGPoint(x: rect.minX, y: rect.minY)
+        case .topRight: CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomLeft: CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomRight: CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+    }
+}
+
+enum CropUtilities {
+    static func preparedUploadData(_ data: Data) -> Data? {
+        guard let source = UIImage(data: data) else { return nil }
+        let longest = max(source.size.width, source.size.height)
+        let scale = min(1, 2200 / longest)
+        let size = CGSize(width: source.size.width * scale, height: source.size.height * scale)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            source.draw(in: CGRect(origin: .zero, size: size))
+        }
+        var quality: CGFloat = 0.86
+        var encoded = image.jpegData(compressionQuality: quality)
+        while let value = encoded, value.count > 1_300_000, quality > 0.42 {
+            quality -= 0.08
+            encoded = image.jpegData(compressionQuality: quality)
+        }
+        return encoded
+    }
+
+    static func crop(_ data: Data, to normalizedRect: CGRect) -> Data? {
+        guard let source = UIImage(data: data) else { return nil }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let upright = UIGraphicsImageRenderer(size: source.size, format: format).image { _ in
+            source.draw(in: CGRect(origin: .zero, size: source.size))
+        }
+        guard let cgImage = upright.cgImage else { return nil }
+        let pixelRect = CGRect(
+            x: normalizedRect.minX * CGFloat(cgImage.width),
+            y: normalizedRect.minY * CGFloat(cgImage.height),
+            width: normalizedRect.width * CGFloat(cgImage.width),
+            height: normalizedRect.height * CGFloat(cgImage.height)
+        ).integral
+        guard let cropped = cgImage.cropping(to: pixelRect) else { return nil }
+        return UIImage(cgImage: cropped).jpegData(compressionQuality: 0.92)
     }
 }

@@ -77,6 +77,22 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(result.vintage, 2.0 / 3.0, accuracy: 0.0001)
     }
 
+    func testFavoriteInspirationAlwaysLeadsRetrieval() {
+        let analysis = InspirationAnalysisDTO(
+            summary: "Look", aesthetics: [], palette: [], silhouettes: [], layering: [], details: [], occasions: [],
+            vector: .zero, analysisVersion: "2", modelVersion: "test"
+        )
+        let favorite = InspirationLook(assetName: "favorite.jpg", state: "ready")
+        favorite.analysis = analysis; favorite.isFavorite = true
+        let keywordMatch = InspirationLook(assetName: "match.jpg", state: "ready")
+        keywordMatch.analysis = InspirationAnalysisDTO(
+            summary: "Match", aesthetics: ["office tailored office"], palette: [], silhouettes: [], layering: [], details: [], occasions: ["office"],
+            vector: .zero, analysisVersion: "2", modelVersion: "test"
+        )
+
+        XCTAssertEqual(StylePreferenceCache.relevantLooks([keywordMatch, favorite], query: "office", limit: 1).first?.id, favorite.id)
+    }
+
     func testVersionOneInspirationStillDecodesForOneTimeUpgrade() throws {
         let json = #"{"summary":"Old look","aesthetics":[],"palette":[],"silhouettes":[],"layering":[],"details":[],"occasions":[],"vector":{"minimal":0,"maximal":0,"relaxed":0,"tailored":0,"romantic":0,"edgy":0,"sporty":0,"vintage":0,"classic":0,"experimental":0,"layered":0,"colorful":0},"analysisVersion":"1","modelVersion":"test"}"#.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(InspirationAnalysisDTO.self, from: json)
@@ -175,7 +191,8 @@ final class WearwellTests: XCTestCase {
             OutfitSuggestionDTO(title: "Owned", rationale: "", garmentIDs: [owned]),
             OutfitSuggestionDTO(title: "Invented", rationale: "", garmentIDs: [outside])
         ])
-        XCTAssertEqual(OutfitValidator.validatePurchase(assessment, garments: [garment], candidateCategory: .tops).outfits.map(\.title), ["Owned"])
+        let candidate = WishlistItem(label: "Possible top", category: .tops, color: "Blue")
+        XCTAssertEqual(OutfitValidator.validatePurchase(assessment, garments: [garment], candidate: candidate).outfits.map(\.title), ["Owned"])
     }
 
     @MainActor
@@ -206,9 +223,9 @@ final class WearwellTests: XCTestCase {
 
     func testOutfitValidationAllowsDressWithBottomButRejectsDuplicateSlots() {
         let dress = Garment(label: "Dress", category: .dresses, color: "Blue")
-        let bottom = Garment(label: "Pants", category: .bottoms, color: "Black")
+        let bottom = Garment(label: "Pants", category: .bottoms, subcategory: .pants, color: "Black")
         let secondBottom = Garment(label: "Skirt", category: .bottoms, color: "Gray")
-        let top = Garment(label: "Top", category: .tops, color: "White")
+        let top = Garment(label: "Plain fitted long sleeve", category: .tops, subcategory: .longSleeve, color: "White")
         let valid = OutfitSuggestionDTO(title: "Layered", rationale: "", garmentIDs: [dress.id, bottom.id, top.id], layering: [
             LayeringStepDTO(garmentID: top.id.uuidString, placement: .under),
             LayeringStepDTO(garmentID: dress.id.uuidString, placement: .main)
@@ -218,8 +235,8 @@ final class WearwellTests: XCTestCase {
     }
 
     func testOutfitValidationAllowsTwoTopsOnlyWithExplicitLayering() {
-        let base = Garment(label: "Long sleeve", category: .tops, color: "White")
-        let tank = Garment(label: "Tank", category: .tops, color: "Black")
+        let base = Garment(label: "Plain fitted long sleeve", category: .tops, subcategory: .longSleeve, color: "White")
+        let tank = Garment(label: "Tank", category: .tops, subcategory: .tankTop, color: "Black")
         let layered = OutfitSuggestionDTO(title: "Intentional layer", rationale: "", garmentIDs: [base.id, tank.id], layering: [
             LayeringStepDTO(garmentID: base.id.uuidString, placement: .under),
             LayeringStepDTO(garmentID: tank.id.uuidString, placement: .main)
@@ -227,6 +244,18 @@ final class WearwellTests: XCTestCase {
         let unplanned = OutfitSuggestionDTO(title: "Unplanned", rationale: "", garmentIDs: [base.id, tank.id])
 
         XCTAssertEqual(OutfitValidator.validateAI([layered, unplanned], garments: [base, tank]).map(\.title), ["Intentional layer"])
+    }
+
+    func testPurchaseTestOutfitsStayOutOfSavedOutfitLibrary() {
+        let candidateID = UUID()
+        let purchaseTest = Outfit(
+            title: "Should I buy this?", origin: .purchaseTest,
+            layout: [LayoutItem(wishlistItemID: candidateID)], wishlistItemID: candidateID
+        )
+        let saved = Outfit(title: "Saved look", origin: .aiStyle, layout: [LayoutItem(garmentID: UUID())])
+
+        XCTAssertFalse(purchaseTest.belongsInOutfitLibrary)
+        XCTAssertTrue(saved.belongsInOutfitLibrary)
     }
 
     func testOpenGraphImageExtraction() {

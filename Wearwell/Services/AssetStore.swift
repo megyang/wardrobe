@@ -1,5 +1,7 @@
 import Foundation
 import CoreImage
+import CryptoKit
+import ImageIO
 import SwiftData
 import UIKit
 import Vision
@@ -80,10 +82,41 @@ actor AssetStore {
         return blob.data
     }
 
+    /// A compact, immutable visual reference for Luna. Asset names are UUID-based
+    /// and change whenever an edited image is saved, so this disk cache naturally
+    /// refreshes only when the underlying garment/inspiration image changes.
+    func visualReferenceData(named name: String) throws -> Data {
+        guard !name.isEmpty else { throw CocoaError(.fileNoSuchFile) }
+        let digest = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let url = root.appending(path: "WearwellVisualReferences/visual-v1/\(digest).jpg")
+        if let cached = try? Data(contentsOf: url), !cached.isEmpty { return cached }
+
+        let source = try data(named: name)
+        guard let imageSource = CGImageSourceCreateWithData(source as CFData, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 384
+              ] as CFDictionary),
+              let encoded = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.72) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.complete]
+        )
+        try encoded.write(to: url, options: [.atomic, .completeFileProtection])
+        return encoded
+    }
+
     func remove(named name: String?) {
         guard let name, !name.isEmpty else { return }
         try? FileManager.default.removeItem(at: directory.appending(path: name))
         Self.removeCachedCollageImage(named: name)
+        let digest = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.removeItem(at: root.appending(path: "WearwellVisualReferences/visual-v1/\(digest).jpg"))
         guard let container else { return }
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<AssetBlob>(predicate: #Predicate { $0.name == name })
@@ -151,10 +184,9 @@ actor AssetStore {
 
     nonisolated static func preparedCollageImage(from source: UIImage) -> UIImage {
         if let checkerboardFallback = EmbeddedCheckerboardRefiner.refine(source) {
-            // Rendered checkerboards contain small color variations that can be
-            // indistinguishable from white fabric. Vision reliably identifies
-            // the complete garment in these generated packshots; use the grid
-            // mask only when Vision cannot produce a plausible full-size item.
+            // Vision is better at rejecting small compression differences in
+            // rendered checker tiles. Keep the grid mask only as a fallback when
+            // Vision cannot identify a plausible full-size garment.
             return ForegroundSubjectExtractor.extract(from: source)
                 ?? AlphaBoundsCropper.crop(checkerboardFallback)
         }
@@ -172,7 +204,7 @@ actor AssetStore {
         return ForegroundSubjectExtractor.extract(from: source) ?? source
     }
 
-    private nonisolated static let collageCacheVersion = "sticker-v12"
+    private nonisolated static let collageCacheVersion = "sticker-v14"
 
     private nonisolated static func collageCacheKey(for name: String) -> NSString {
         "\(collageCacheVersion)-\(name)" as NSString
@@ -689,40 +721,52 @@ enum AlphaBoundsCropper {
 
 enum OutfitValidator {
     static func validateAI(_ suggestions: [OutfitSuggestionDTO], garments: [Garment], anchorID: UUID? = nil) -> [OutfitSuggestionDTO] {
-        suggestions.filter { suggestion in
+        return suggestions.filter { suggestion in
             isValid(suggestion, garments: garments) && (anchorID.map { suggestion.garmentIDs.contains($0) } ?? true)
         }
     }
 
-    static func validatePurchase(_ assessment: PurchaseAssessmentDTO, garments: [Garment], candidateCategory: GarmentCategory) -> PurchaseAssessmentDTO {
-        let valid = assessment.outfits.filter { isValid($0, garments: garments, candidateCategory: candidateCategory) }
+    static func validatePurchase(_ assessment: PurchaseAssessmentDTO, garments: [Garment], candidate: WishlistItem) -> PurchaseAssessmentDTO {
+        let valid = assessment.outfits.filter { isValid($0, garments: garments, candidate: candidate) }
         return PurchaseAssessmentDTO(verdict: assessment.verdict, summary: assessment.summary, outfits: valid)
     }
 
-    private static func isValid(_ suggestion: OutfitSuggestionDTO, garments: [Garment], candidateCategory: GarmentCategory? = nil) -> Bool {
+    private struct Piece {
+        var id: String
+        var category: GarmentCategory
+    }
+
+    private static func isValid(_ suggestion: OutfitSuggestionDTO, garments: [Garment], candidate: WishlistItem? = nil) -> Bool {
         guard !suggestion.garmentIDs.isEmpty else { return false }
         guard Set(suggestion.garmentIDs).count == suggestion.garmentIDs.count else { return false }
-        let categories = Dictionary(uniqueKeysWithValues: garments.map { ($0.id, $0.category) })
-        guard Set(suggestion.garmentIDs).isSubset(of: Set(categories.keys)) else { return false }
+        let owned = Dictionary(uniqueKeysWithValues: garments.map { ($0.id, $0) })
+        guard Set(suggestion.garmentIDs).isSubset(of: Set(owned.keys)) else { return false }
         var counts: [GarmentCategory: Int] = [:]
-        if let candidateCategory, [.tops, .bottoms, .dresses].contains(candidateCategory) { counts[candidateCategory] = 1 }
-        var torsoIDs = candidateCategory.map { [.tops, .dresses].contains($0) ? ["__candidate__"] : [] } ?? []
+        var pieces: [Piece] = []
+        if let candidate {
+            counts[candidate.category] = 1
+            pieces.append(Piece(id: "__candidate__", category: candidate.category))
+        }
         for id in suggestion.garmentIDs {
-            guard let category = categories[id] else { return false }
-            counts[category, default: 0] += 1
-            if [.tops, .dresses].contains(category) { torsoIDs.append(id.uuidString.lowercased()) }
+            guard let garment = owned[id] else { return false }
+            counts[garment.category, default: 0] += 1
+            pieces.append(Piece(id: id.uuidString.lowercased(), category: garment.category))
         }
         guard counts[.bottoms, default: 0] <= 1,
               counts[.dresses, default: 0] <= 1,
-              counts[.tops, default: 0] <= 2,
-              torsoIDs.count <= 2 else { return false }
+              counts[.tops, default: 0] <= 2 else { return false }
+        let torso = pieces.filter { [.tops, .dresses].contains($0.category) }
+        guard torso.count <= 2 else { return false }
         let layering = suggestion.layering ?? []
-        guard torsoIDs.count == 2 else { return layering.isEmpty }
+        guard torso.count == 2 else { return layering.isEmpty }
         guard layering.count == 2 else { return false }
         let plannedIDs = layering.map { $0.garmentID.lowercased() }
-        guard Set(plannedIDs).count == 2, torsoIDs.allSatisfy(plannedIDs.contains) else { return false }
-        let placements = Set(layering.map(\.placement))
-        guard placements.contains(.under), placements.contains(.main) || placements.contains(.over) else { return false }
+        guard Set(plannedIDs).count == 2, torso.allSatisfy({ plannedIDs.contains($0.id) }),
+              let underStep = layering.first(where: { $0.placement == .under }),
+              let outerStep = layering.first(where: { [.main, .over].contains($0.placement) }),
+              underStep.garmentID.lowercased() != outerStep.garmentID.lowercased(),
+              torso.contains(where: { $0.id == underStep.garmentID.lowercased() }),
+              torso.contains(where: { $0.id == outerStep.garmentID.lowercased() }) else { return false }
         return true
     }
 }

@@ -78,9 +78,10 @@ enum StylePreferenceCache {
         })
     }
 
-    static func relevantLooks(_ looks: [InspirationLook], query: String, limit: Int = 4) -> [InspirationLook] {
+    static func relevantLooks(_ looks: [InspirationLook], query: String, limit: Int = 6) -> [InspirationLook] {
         let queryTokens = tokens(query)
         return looks.filter { $0.state == "ready" && $0.analysis != nil }.sorted { lhs, rhs in
+            if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite }
             let left = relevance(lhs, queryTokens: queryTokens)
             let right = relevance(rhs, queryTokens: queryTokens)
             return left == right ? lhs.updatedAt > rhs.updatedAt : left > right
@@ -100,7 +101,7 @@ enum StylePreferenceCache {
         traits.append(contentsOf: analysis.focalPoints ?? [])
         traits.append(contentsOf: analysis.stylingRules ?? [])
         let overlap = traits.reduce(0) { $0 + tokens($1).intersection(queryTokens).count }
-        return overlap + (look.isFavorite ? 3 : 0)
+        return overlap
     }
 
     private static func tokens(_ value: String) -> Set<String> {

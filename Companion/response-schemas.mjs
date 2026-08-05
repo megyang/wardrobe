@@ -5,7 +5,7 @@ export function outfitSchema(validIDs, min = 3, max = 5, layeringIDs = validIDs)
         title: { type: "string" }, rationale: { type: "string" },
         // Codex structured outputs do not accept JSON Schema's `uniqueItems`.
         // Duplicate IDs are rejected after decoding instead.
-        garmentIDs: { type: "array", minItems: 2, items: { type: "string", enum: validIDs } },
+        garmentIDs: { type: "array", minItems: 2, maxItems: 5, items: { type: "string", enum: validIDs } },
         layering: { type: "array", maxItems: 2, items: {
           type: "object", additionalProperties: false, required: ["garmentID", "placement"], properties: {
             garmentID: { type: "string", enum: layeringIDs },
@@ -32,5 +32,12 @@ export function outfitSelectionSchema(candidateIDs) {
         title: { type: "string" }, rationale: { type: "string" }
       }
     }}
+  }};
+}
+
+export function itemRecommendationSchema(candidateIDs) {
+  return { type: "object", additionalProperties: false, required: ["garmentID", "rationale"], properties: {
+    garmentID: { type: "string", enum: candidateIDs },
+    rationale: { type: "string" }
   }};
 }

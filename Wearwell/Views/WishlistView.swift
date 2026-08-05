@@ -194,6 +194,7 @@ struct WishlistDetailView: View {
     @State private var working = false
     @State private var error: String?
     @State private var confirmDelete = false
+    @AppStorage("savedOutfitViewMode") private var outfitViewMode = "gallery"
     private var assessmentIsActive: Bool { item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } ?? false }
     private var savedPurchaseOutfits: [Outfit] { outfits.filter { $0.wishlistItemID == item.id && $0.origin == .purchaseTest } }
     var body: some View {
@@ -216,7 +217,10 @@ struct WishlistDetailView: View {
                 else if let verdict = item.verdict {
                     StatusPill(text: verdict.rawValue.uppercased(), color: verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral)
                     Text(item.verdictSummary)
-                    ForEach(savedPurchaseOutfits) { outfit in savedOutfitView(outfit) }
+                    if !savedPurchaseOutfits.isEmpty {
+                        outfitViewPicker
+                        purchaseOutfitsView(savedPurchaseOutfits)
+                    }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 if let assessmentError = item.assessmentError { Text(assessmentError).foregroundStyle(.red) }
@@ -238,37 +242,86 @@ struct WishlistDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             StatusPill(text: value.verdict.rawValue.uppercased(), color: value.verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral)
             Text(value.summary).font(.subheadline)
-            ForEach(value.outfits) { suggestion in
-                NavigationLink {
-                    CollageEditorView(origin: .purchaseTest, title: suggestion.title, rationale: suggestion.rationale, items: purchaseLayout(for: suggestion), wishlistItem: item)
-                } label: {
-                    VStack(alignment: .leading, spacing: 10) {
-                        CollagePreview(items: purchaseLayout(for: suggestion), garments: garments, candidate: item).frame(height: 280)
-                        Text(suggestion.title).font(.headline)
-                        Text(suggestion.rationale).font(.caption).foregroundStyle(.secondary)
-                        Label("Open in collage editor", systemImage: "hand.draw").font(.caption2).foregroundStyle(WearwellTheme.sage)
-                    }
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
-                }.buttonStyle(.plain)
+            if !value.outfits.isEmpty {
+                outfitViewPicker
+                purchaseSuggestionsView(value.outfits)
             }
         }
     }
 
-    private func savedOutfitView(_ outfit: Outfit) -> some View {
-        NavigationLink {
-            OutfitDetailView(outfit: outfit)
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                CollagePreview(items: outfit.layout, garments: garments, candidate: item).frame(height: 280)
-                Text(outfit.title).font(.headline)
-                Text(outfit.rationale).font(.caption).foregroundStyle(.secondary)
+    private var outfitViewPicker: some View {
+        HStack {
+            Text("Potential outfits").font(.headline)
+            Spacer()
+            Picker("Outfit view", selection: $outfitViewMode) {
+                Label("Gallery", systemImage: "square.grid.2x2").tag("gallery")
+                Label("Names", systemImage: "list.bullet").tag("names")
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+            .pickerStyle(.segmented)
+            .frame(width: 205)
+        }
+    }
+
+    @ViewBuilder
+    private func purchaseSuggestionsView(_ suggestions: [OutfitSuggestionDTO]) -> some View {
+        if outfitViewMode == "names" {
+            ForEach(suggestions) { suggestion in suggestionLink(suggestion, gallery: false) }
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 14)], spacing: 14) {
+                ForEach(suggestions) { suggestion in suggestionLink(suggestion, gallery: true) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func purchaseOutfitsView(_ values: [Outfit]) -> some View {
+        if outfitViewMode == "names" {
+            ForEach(values) { outfit in savedOutfitLink(outfit, gallery: false) }
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 14)], spacing: 14) {
+                ForEach(values) { outfit in savedOutfitLink(outfit, gallery: true) }
+            }
+        }
+    }
+
+    private func suggestionLink(_ suggestion: OutfitSuggestionDTO, gallery: Bool) -> some View {
+        NavigationLink {
+            CollageEditorView(origin: .purchaseTest, title: suggestion.title, rationale: suggestion.rationale, items: purchaseLayout(for: suggestion), wishlistItem: item)
+        } label: {
+            purchaseOutfitLabel(title: suggestion.title, rationale: suggestion.rationale, layout: purchaseLayout(for: suggestion), gallery: gallery)
         }.buttonStyle(.plain)
+    }
+
+    private func savedOutfitLink(_ outfit: Outfit, gallery: Bool) -> some View {
+        NavigationLink { OutfitDetailView(outfit: outfit) } label: {
+            purchaseOutfitLabel(title: outfit.title, rationale: outfit.rationale, layout: outfit.layout, gallery: gallery)
+        }.buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func purchaseOutfitLabel(title: String, rationale: String, layout: [LayoutItem], gallery: Bool) -> some View {
+        if gallery {
+            CollagePreview(items: layout, garments: garments, candidate: item)
+                .aspectRatio(0.8, contentMode: .fit)
+                .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: "bag").font(.caption.weight(.semibold)).foregroundStyle(WearwellTheme.sage)
+                        .padding(8).background(.ultraThinMaterial, in: Circle()).padding(9)
+                }
+                .shadow(color: .black.opacity(0.06), radius: 14, y: 7)
+                .accessibilityLabel(title)
+        } else {
+            HStack(spacing: 12) {
+                Image(systemName: "bag").foregroundStyle(WearwellTheme.sage)
+                    .frame(width: 44, height: 44).background(WearwellTheme.sage.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline)
+                    Text(rationale).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+        }
     }
 
     private func assess() async {
@@ -338,7 +391,7 @@ enum PurchaseAssessmentResults {
         item.assessmentError = job.error
         guard let raw = job.result else { return nil }
 
-        let value = OutfitValidator.validatePurchase(raw, garments: garments, candidateCategory: item.category)
+        let value = OutfitValidator.validatePurchase(raw, garments: garments, candidate: item)
         item.verdict = value.verdict
         item.verdictSummary = value.summary
         let currentOutfits = (try? context.fetch(FetchDescriptor<Outfit>())) ?? outfits

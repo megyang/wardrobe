@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import selfsigned from "selfsigned";
+import sharp from "sharp";
 import { Bonjour } from "bonjour-service";
 import { Codex } from "@openai/codex-sdk";
 import { catalogEditPrompt, catalogPrompt } from "./prompts.mjs";
@@ -13,7 +14,8 @@ import { hasValidOutfitComposition } from "./outfit-rules.mjs";
 import { SerialQueue } from "./serial-queue.mjs";
 import { withAbortTimeout } from "./timeout.mjs";
 import { PriorityQueue } from "./priority-queue.mjs";
-import { assessmentSchema, outfitSchema, outfitSelectionSchema } from "./response-schemas.mjs";
+import { assessmentSchema, itemRecommendationSchema, outfitSchema, outfitSelectionSchema } from "./response-schemas.mjs";
+import { eligibleRecommendationItems, recommendationTarget } from "./item-recommendation.mjs";
 import { inspirationPrompt, inspirationSchema, STYLE_ANALYSIS_VERSION } from "./inspiration.mjs";
 import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
 
@@ -41,7 +43,7 @@ const ANALYSIS_TIMEOUT_MS = 4 * 60 * 1000;
 const IMAGE_TIMEOUT_MS = 5 * 60 * 1000;
 const INITIAL_ANALYSIS_ESTIMATE_SECONDS = 180;
 const CUTOUT_ESTIMATE_SECONDS = 75;
-const STYLE_ESTIMATE_SECONDS = 45;
+const STYLE_ESTIMATE_SECONDS = 75;
 const ASSESSMENT_ESTIMATE_SECONDS = 60;
 const CATALOG_EDIT_ESTIMATE_SECONDS = 90;
 const OVERDUE_SWEEP_MS = 15 * 1000;
@@ -211,6 +213,68 @@ async function temporaryImage(base64, prefix = "input") {
   return { file, folder };
 }
 
+async function materializeVisualReferences(groups) {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "wearwell-visuals-"));
+  const files = []; const legend = []; let totalBytes = 0;
+  for (const group of groups) {
+    for (const reference of group.references || []) {
+      if (!reference || typeof reference.id !== "string" || !group.allowed(reference.id)) continue;
+      const bytes = Buffer.from(String(reference.imageBase64 || ""), "base64");
+      if (!bytes.length || bytes.length > 1024 * 1024 || totalBytes + bytes.length > 16 * 1024 * 1024) continue;
+      const file = path.join(folder, `${files.length + 1}.jpg`);
+      await fs.writeFile(file, bytes); files.push(file); totalBytes += bytes.length;
+      legend.push(`Image ${files.length}: ${group.label} ID ${reference.id}`);
+    }
+  }
+  return { folder, files, legend };
+}
+
+async function materializeCandidateBoards(candidates, wardrobe, garmentVisuals, imageOffset = 0, legendLabel = "assembled candidate") {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "wearwell-candidates-"));
+  const byVisualID = new Map((garmentVisuals || []).map(item => [item.id, item.imageBase64]));
+  const byGarmentID = new Map(wardrobe.map(item => [item.id, item]));
+  const files = []; const legend = [];
+  for (const candidate of candidates) {
+    const pieces = candidate.garmentIDs.map(id => ({ id, item: byGarmentID.get(id), image: byVisualID.get(id) })).filter(value => value.image);
+    if (pieces.length < 2) continue;
+    const width = 900; const height = 1080; const columns = pieces.length <= 2 ? 2 : pieces.length <= 4 ? 2 : 3;
+    const rows = Math.ceil(pieces.length / columns); const cellWidth = Math.floor(width / columns); const cellHeight = Math.floor(height / rows);
+    const composites = [];
+    for (let index = 0; index < pieces.length; index++) {
+      try {
+        const layoutItem = (candidate.layout || []).find(item => String(item.garmentID) === String(pieces[index].id));
+        if (layoutItem) {
+          const pieceWidth = Math.max(100, Math.round(420 * (layoutItem.scale || 1)));
+          const pieceHeight = Math.max(120, Math.round(490 * (layoutItem.scale || 1)));
+          let pipeline = sharp(Buffer.from(pieces[index].image, "base64"))
+            .resize({ width: pieceWidth, height: pieceHeight, fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } });
+          if (layoutItem.rotation) pipeline = pipeline.rotate(layoutItem.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+          const resized = await pipeline.png().toBuffer();
+          const metadata = await sharp(resized).metadata();
+          const actualWidth = metadata.width || pieceWidth; const actualHeight = metadata.height || pieceHeight;
+          const left = Math.max(0, Math.min(width - actualWidth, Math.round((layoutItem.x || 0.5) * width - actualWidth / 2)));
+          const top = Math.max(0, Math.min(height - actualHeight, Math.round((layoutItem.y || 0.5) * height - actualHeight / 2)));
+          composites.push({ input: resized, left, top });
+        } else {
+          const resized = await sharp(Buffer.from(pieces[index].image, "base64"))
+            .resize({ width: cellWidth - 36, height: cellHeight - 36, fit: "contain", background: { r: 244, g: 244, b: 241, alpha: 1 } })
+            .png().toBuffer();
+          const row = Math.floor(index / columns); const column = index % columns;
+          composites.push({ input: resized, left: column * cellWidth + 18, top: row * cellHeight + 18 });
+        }
+      } catch { /* the remaining pictured pieces still provide useful evidence */ }
+    }
+    if (composites.length < 2) continue;
+    const file = path.join(folder, `${files.length + 1}-${candidate.candidateID}.jpg`);
+    await sharp({ create: { width, height, channels: 3, background: { r: 244, g: 244, b: 241 } } })
+      .composite(composites).jpeg({ quality: 78 }).toFile(file);
+    files.push(file);
+    const labels = pieces.map(value => value.item?.label || value.id).join(" + ");
+    legend.push(`Image ${imageOffset + files.length}: ${legendLabel} ID ${candidate.candidateID} (${labels})`);
+  }
+  return { folder, files, legend };
+}
+
 function workerHome(workerIndex) { return path.join(WORKER_ROOT, `worker-${workerIndex + 1}`); }
 function generatedRoot(workerIndex = null) {
   return path.join(workerIndex === null ? PRIMARY_CODEX_HOME : workerHome(workerIndex), "generated_images");
@@ -275,12 +339,19 @@ async function generatedImage(prompt, images, parentSignal = null, workerIndex =
 }
 
 async function analyze(body, reportProgress = async () => {}, signal = null, workerIndex = null) {
-  const temp = await temporaryImage(body.imageBase64, "source");
+  const encodedImages = Array.isArray(body.imageBase64s) && body.imageBase64s.length
+    ? body.imageBase64s.slice(0, 12)
+    : [body.imageBase64];
+  const temps = await Promise.all(encodedImages.map((encoded, index) => temporaryImage(encoded, `source-${index + 1}`)));
+  const files = temps.map(temp => temp.file);
   try {
-    await reportProgress({ stage: "Analyzing photo", progressCompleted: 0, progressTotal: null, estimatedSecondsRemaining: INITIAL_ANALYSIS_ESTIMATE_SECONDS });
+    await reportProgress({ stage: files.length > 1 ? `Analyzing ${files.length} photos` : "Analyzing photo", progressCompleted: 0, progressTotal: null, estimatedSecondsRemaining: INITIAL_ANALYSIS_ESTIMATE_SECONDS });
+    const inventoryInstruction = body.sameItem && files.length > 1
+      ? "These photos are different views of the same single clothing item. Analyze them together and return exactly one inventory item, combining only details that are visibly supported across the views. Ignore other garments that appear incidentally."
+      : "Inventory every deliberately shown or worn clothing item visible in this image.";
     const result = await structured(
-      "Inventory every deliberately shown or worn clothing item visible in this image. Exclude the person, background, bags, and jewelry. Describe only visible evidence and explicitly list unknown details. Never invent logos, text, pockets, trim, fasteners, materials, or construction. Give each item a conservative fingerprint from visible color, material, silhouette, and distinctive marks. Choose exactly one matching subcategory: tops use long_sleeve, tank_top, t_shirt, sleeveless, or blouse; bottoms use shorts, mini_skirt, midi_skirt, maxi_skirt, or pants; outerwear uses coverup, sweater, jacket, or coat; accessories use tights, hat, or misc. Dresses and shoes use none. Use mini_skirt for hems above the knee, midi_skirt for hems from around the knee through mid-calf, and maxi_skirt for ankle- or floor-length skirts. Use none when the visible evidence does not establish a skirt's length. Prefer blouse for a visibly blouse-like woven or dress top, tank_top for a tank silhouette, t_shirt for a tee, sleeveless for another sleeveless top, and long_sleeve for another long-sleeved top.",
-      [temp.file], inventorySchema, signal, workerIndex
+      `${inventoryInstruction} Exclude the person, background, bags, and jewelry. Describe only visible evidence and explicitly list unknown details. Never invent logos, text, pockets, trim, fasteners, materials, or construction. Give each item a conservative fingerprint from visible color, material, silhouette, and distinctive marks. Choose exactly one matching subcategory: tops use long_sleeve, tank_top, t_shirt, sleeveless, or blouse; bottoms use shorts, mini_skirt, midi_skirt, maxi_skirt, or pants; outerwear uses coverup, sweater, jacket, or coat; accessories use tights, hat, or misc. Dresses and shoes use none. Use mini_skirt for hems above the knee, midi_skirt for hems from around the knee through mid-calf, and maxi_skirt for ankle- or floor-length skirts. Use none when the visible evidence does not establish a skirt's length. Prefer blouse for a visibly blouse-like woven or dress top, tank_top for a tank silhouette, t_shirt for a tee, sleeveless for another sleeveless top, and long_sleeve for another long-sleeved top.`,
+      files, inventorySchema, signal, workerIndex
     );
     const items = [];
     const cutoutCount = result.items.filter(item => item.confidence >= 0.45).length;
@@ -299,7 +370,7 @@ async function analyze(body, reportProgress = async () => {}, signal = null, wor
           estimatedSecondsRemaining: Math.max(15, (cutoutCount - completedCutouts) * CUTOUT_ESTIMATE_SECONDS)
         });
         try {
-          const image = await generatedImage(catalogPrompt(item), [temp.file], signal, workerIndex);
+          const image = await generatedImage(catalogPrompt(item), files, signal, workerIndex);
           catalogImageBase64 = image.toString("base64");
         } catch { /* the app will show the source image for review */ }
         completedCutouts += 1;
@@ -308,46 +379,110 @@ async function analyze(body, reportProgress = async () => {}, signal = null, wor
     }
     await reportProgress({ stage: "Finishing", progressCompleted: cutoutCount, progressTotal: cutoutCount, estimatedSecondsRemaining: 10 });
     return { items };
-  } finally { await fs.rm(temp.folder, { recursive: true, force: true }); }
+  } finally { await Promise.all(temps.map(temp => fs.rm(temp.folder, { recursive: true, force: true }))); }
 }
 
 async function style(body, signal = null, workerIndex = null) {
   const ids = body.wardrobe.map(item => item.id);
   if (ids.length < 2) throw new Error("Add at least two confirmed garments first.");
+  const recentOutfits = Array.isArray(body.recentOutfits) ? body.recentOutfits.slice(0, 18) : [];
+  const outfitFeedback = Array.isArray(body.outfitFeedback) ? body.outfitFeedback.slice(0, 80) : [];
+  const savedOutfits = Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 30) : [];
+  const outfitEdits = Array.isArray(body.outfitEdits) ? body.outfitEdits.slice(0, 40) : [];
+  const relevantSavedOutfits = [...savedOutfits].sort((a, b) => {
+    const aHasAnchor = body.anchorID && (a.garmentIDs || []).includes(body.anchorID) ? 1 : 0;
+    const bHasAnchor = body.anchorID && (b.garmentIDs || []).includes(body.anchorID) ? 1 : 0;
+    return bHasAnchor - aHasAnchor || Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0);
+  }).slice(0, 6);
+  const dislikedCombinationKeys = new Set(outfitFeedback.filter(item => item.rating === "disliked").map(item => item.combinationKey));
+  const recentUsage = new Map();
+  for (const outfit of recentOutfits) {
+    for (const id of outfit.garmentIDs || []) recentUsage.set(id, (recentUsage.get(id) || 0) + 1);
+  }
+  const recentBottomUsage = body.wardrobe
+    .filter(item => item.category === "bottoms")
+    .map(item => ({ id: item.id, label: item.label, recentUses: recentUsage.get(item.id) || 0 }))
+    .sort((a, b) => a.recentUses - b.recentUses || a.label.localeCompare(b.label));
+  const inspirationIDs = new Set((body.inspirationExamples || []).map(item => item.id));
+  const wardrobeIDs = new Set(ids);
+  const generationVisuals = await materializeVisualReferences([
+    { label: "owned garment", references: body.garmentVisuals, allowed: id => wardrobeIDs.has(id) },
+    { label: "inspiration look", references: body.inspirationVisuals, allowed: id => inspirationIDs.has(id) }
+  ]);
   const prompt = [
-    "Act as Wearwell's wardrobe stylist. Create 6 to 8 genuinely distinct candidate outfits using ONLY the supplied owned garment IDs. These candidates will be ranked by a separate fashion critic.",
-    "This is a text-only selection task. Do not create or request an outfit image; return only the structured titles, rationales, and garment IDs.",
+    "Act as Wearwell's wardrobe stylist. Create 10 to 12 genuinely distinct candidate outfits using ONLY the supplied owned garment IDs. These candidates will be visually ranked by a separate fashion critic.",
+    "Return only structured titles, rationales, garment IDs, and layering—not an output image.",
     "Never invent, recommend, search for, or mention a purchasable item. Never repeat the same garment ID within one outfit. Use an anchor when supplied. Keep each rationale concise but name the intended layering order whenever pieces overlap.",
-    "Use the supplied garment analyses as visual evidence: consider neckline, sleeve volume, silhouette, fabric weight, color, print, season, occasion, and whether the proposed layers can physically sit together. Treat listed unknowns and low-confidence details as uncertain. Do not force layering merely to use more pieces.",
-    "Composition rule: allow at most two tops, one bottom, and one dress. Two tops are allowed ONLY as an intentional two-piece torso layer (for example, a fitted long sleeve or T-shirt under a tank). A top and dress may likewise form a two-piece layer. Never use more than two torso pieces total, two bottoms, or two dresses. A dress may be worn with one bottom when stylistically intentional. Outerwear, shoes, and accessories do not consume torso slots.",
+    "The attached pictures include both the user's chosen inspiration and every available owned garment. Inspect the actual owned-garment pictures before choosing combinations; text is supporting metadata only. For every candidate, translate a specific reference's garment-role formula, proportion balance, focal hierarchy, degree of contrast, and styling tension into the owned wardrobe. Do not reduce inspiration matching to shared colors or broad aesthetic words. If an exact garment is unavailable, preserve the visual relationship with the nearest owned silhouette; do not invent a piece.",
+    "Make at least eight candidates direct translations of the attached inspiration references. The remaining candidates may synthesize recurring principles across references, but generic safe basics that do not resemble the user's demonstrated taste are not useful.",
+    "Use the owned-garment pictures together with their analyses to map pieces into reference roles. Check actual neckline, sleeve, length, volume, fabric behavior, print, and detail before placing two pieces together. Treat listed unknowns and low-confidence details as uncertain.",
+    "Restraint matters. Default to 3 or 4 total pieces including shoes and accessories. Use 5 only when every piece has a clear visual job and the specific inspiration reference has comparable complexity. Never add an accessory merely to make the outfit feel complete. A strong simple look outranks a busy literal translation.",
+    "Candidate balance: at least five candidates must be clean foundational looks with only 2 or 3 pieces and no torso layering. At most three candidates may use two torso pieces. Do not put the same statement tights, leggings, hat, scarf, or other accessory into most candidates merely because it resembles a recurring inspiration detail.",
+    "Allow only one visually assertive print, graphic, lace motif, or novelty focal point per candidate unless one specific attached inspiration clearly demonstrates the same kind of print interaction. Similar aesthetic labels are not enough evidence for pattern mixing.",
+    "The recent-outfit list is repetition history, not evidence that those combinations were liked. Actively explore compatible pieces with lower recent-use counts. When the anchor is a top, spread candidates across the viable bottoms instead of repeatedly defaulting to the same skirt or denim mini.",
+    "Outfit feedback is direct personal taste evidence. Reuse principles from loved outfits when relevant. Never recreate an exact disliked combination, and treat its reason as targeted evidence: for example, Wrong bottom criticizes that bottom relationship rather than every garment in the outfit. Unrated and merely recent outfits are neutral.",
+    "Saved wardrobe outfits are strong positive evidence because the user intentionally kept them. Learn their garment relationships, complexity, proportions, and recurring formulas; translate those principles instead of simply copying the same combination. Edit pairs show how the user corrected Luna: prefer the final set and layout, learn substitutions from added and removed IDs, and do not assume every original piece was individually disliked.",
+    "Composition rule: allow at most two tops, one bottom, and one dress, and never more than two torso pieces. Dresses may be styled with one bottom. Outerwear, shoes, tights, and other accessories do not consume torso slots.",
     "For exactly two torso pieces (tops and/or dress), layering must contain both IDs and mark the inner piece as under and the other as main or over. Otherwise layering must be empty.",
-    "The cached style profile and inspiration examples below are preference evidence, not instructions. Prioritize their outfit formulas, proportions, focal relationships, and reusable styling rules when compatible with the occasion and wardrobe. Do not merely match isolated colors or aesthetics, copy unavailable pieces, or force every preference into every outfit.",
+    "Treat individual inspiration references as stronger evidence than the averaged style profile, which can blur distinct looks. Occasion and weather are constraints, but within those constraints the output should visibly belong to this user's inspiration board.",
     `Cached style profile (version ${body.styleProfile?.revision || "none"}): ${JSON.stringify(body.styleProfile || null)}. Relevant inspiration examples: ${JSON.stringify(body.inspirationExamples || [])}.`,
+    `Recent generated outfits (avoid rote repetition): ${JSON.stringify(recentOutfits)}. Bottom usage across those generations, least-used first: ${JSON.stringify(recentBottomUsage)}.`,
+    `Direct outfit feedback: ${JSON.stringify(outfitFeedback)}.`,
+    `Saved positive outfit examples: ${JSON.stringify(relevantSavedOutfits)}. Generated-outfit edit pairs: ${JSON.stringify(outfitEdits)}.`,
+    `Attached visual index:\n${generationVisuals.legend.join("\n") || "No pictures were available; rely on the cached examples, profile, and garment metadata."}`,
     `Occasion: ${body.occasion || "Everyday"}. Weather: ${body.weather || "unspecified"}. Mood/color: ${body.mood || "open"}. Anchor ID: ${body.anchorID || "none"}. Request: ${body.request || "none"}.`,
     `Owned wardrobe: ${JSON.stringify(body.wardrobe)}.`
   ].join("\n\n");
-  const value = await structured(prompt, [], outfitSchema(ids, 6, 8), signal, workerIndex);
+  let value;
+  try { value = await structured(prompt, generationVisuals.files, outfitSchema(ids, 10, 12), signal, workerIndex); }
+  finally { await fs.rm(generationVisuals.folder, { recursive: true, force: true }); }
   const seenCombinations = new Set();
   const candidates = value.outfits.filter(item => {
-    const key = [...item.garmentIDs].sort().join("|");
+    const key = item.garmentIDs.map(id => String(id).toLowerCase()).sort().join("|");
     const valid = hasValidOutfitComposition(item.garmentIDs, body.wardrobe, null, item.layering) &&
       new Set(item.garmentIDs).size === item.garmentIDs.length &&
-      (!body.anchorID || item.garmentIDs.includes(body.anchorID)) && !seenCombinations.has(key);
+      (!body.anchorID || item.garmentIDs.includes(body.anchorID)) && !seenCombinations.has(key) && !dislikedCombinationKeys.has(key);
     if (valid) seenCombinations.add(key);
     return valid;
   }).map(item => ({ ...item, candidateID: randomUUID() }));
   if (candidates.length < 3) throw new Error("Fewer than three valid outfit combinations were generated. Please try again.");
 
+  const visuals = await materializeVisualReferences([
+    { label: "inspiration look", references: body.inspirationVisuals, allowed: id => inspirationIDs.has(id) }
+  ]);
+  const savedBoardInputs = relevantSavedOutfits.map(item => ({ ...item, candidateID: item.id }));
+  const savedBoards = await materializeCandidateBoards(savedBoardInputs, body.wardrobe, body.garmentVisuals, visuals.files.length, "saved positive outfit");
+  const candidateBoards = await materializeCandidateBoards(candidates, body.wardrobe, body.garmentVisuals, visuals.files.length + savedBoards.files.length);
+  const criticFiles = [...visuals.files, ...savedBoards.files, ...candidateBoards.files];
+  const criticLegend = [...visuals.legend, ...savedBoards.legend, ...candidateBoards.legend];
   const criticPrompt = [
-    "Act as Luna's final fashion editor. Select exactly three of the supplied candidate outfits. You may not alter garment IDs or layering; select only by candidateID.",
-    "Be demanding. Judge physical layering plausibility, silhouette and proportion, palette cohesion, occasion and weather fit, a clear focal point, and whether the combination feels intentional rather than merely compatible.",
-    "Use the inspiration outfit formulas, proportions, focal points, and styling rules as the strongest taste evidence. Reject bland, awkward, overstuffed, overly literal, or repetitive combinations. The final three should be meaningfully different from one another.",
+    "Act as Luna's final fashion editor. Select exactly three of the supplied candidate outfits. You may not alter garment IDs or layering; select only by candidateID. The candidate pool was deliberately built with restrained foundational options, so fill the three-outfit quota with the strongest visually coherent choices.",
+    "The attached images are the decisive visual evidence. Each candidate has an assembled flat-lay board made from the actual wardrobe cutouts, so judge the combination as a whole rather than imagining it from labels. Inspect palette, print interaction, detail density, silhouette and proportion; then use the candidate's layering metadata to judge physical overlap.",
+    "Be demanding. Judge silhouette and proportion, palette cohesion, occasion and weather fit, a clear focal point, and whether the combination feels styled rather than merely compatible. Layering is neither automatically good nor automatically bad: keep it only when these exact pictured pieces make it one of the strongest looks.",
+    "After physical plausibility, resemblance to the user's inspiration is the primary ranking criterion. Compare candidates against the attached inspiration pictures directly: garment-role formula, proportions, silhouette interaction, focal hierarchy, contrast, detail density, and styling tension. Reject a merely safe or color-coordinated candidate when it does not feel like something from this board.",
+    "Use individual inspiration references as stronger evidence than the averaged profile. Reject bland, awkward, overstuffed, overly literal, or repetitive combinations. The final three should be meaningfully different from one another while still sharing the user's demonstrated taste.",
+    "Prefer the least complicated candidate that fully expresses the idea. Reject candidates with more than four total pieces unless the extra piece is visibly essential and the matched inspiration has similar density. Shoes and accessories count as pieces.",
+    "Do not let one distinctive pair of tights, leggings, shoes, hat, scarf, or other statement piece dominate the final set. Unless it is the requested anchor, normally use a garment in only one selected look. Repetition is evidence that the candidate generator latched onto a keyword rather than understanding the board.",
+    "For a top anchor, select three different bottoms whenever at least three visually credible bottom choices exist in the candidate pool. Prefer a coherent underused bottom over an equally coherent recently repeated one. Recent generation history is a diversity constraint, not positive taste feedback.",
+    "Apply direct outfit feedback before general inspiration similarity. Loved combinations are positive evidence of relationships the user accepts. Reject exact disliked combinations and honor the recorded reason without overgeneralizing it to unrelated outfits.",
+    "The attached saved-positive boards show outfits the user actually kept, including their chosen collage arrangements. Use them as personal taste evidence. Edit pairs show preferred corrections from original to final; reward candidates that follow those substitutions or proportion choices when relevant.",
+    "Reject rationalization. Phrases such as playful tension, eclectic contrast, or nostalgic energy do not rescue colors, patterns, proportions, or silhouettes that look incoherent in the actual pictures.",
     "Write a specific concise title and rationale for each selected combination, explaining why its actual pieces work together.",
     `Direction: ${JSON.stringify({ occasion: body.occasion || "Everyday", weather: body.weather || "unspecified", mood: body.mood || "open", request: body.request || "none", anchorID: body.anchorID || null })}.`,
     `Cached style profile: ${JSON.stringify(body.styleProfile || null)}. Relevant inspiration examples: ${JSON.stringify(body.inspirationExamples || [])}.`,
+    `Recent generated outfits: ${JSON.stringify(recentOutfits)}. Recent bottom usage: ${JSON.stringify(recentBottomUsage)}.`,
+    `Direct outfit feedback: ${JSON.stringify(outfitFeedback)}.`,
+    `Saved positive outfits: ${JSON.stringify(relevantSavedOutfits)}. Generated-outfit edit pairs: ${JSON.stringify(outfitEdits)}.`,
+    `Attached visual index:\n${criticLegend.join("\n") || "No visual references were available; be conservative about uncertain details."}`,
     `Owned wardrobe: ${JSON.stringify(body.wardrobe)}. Candidate outfits: ${JSON.stringify(candidates)}.`
   ].join("\n\n");
-  const ranked = await structured(criticPrompt, [], outfitSelectionSchema(candidates.map(item => item.candidateID)), signal, workerIndex);
+  let ranked;
+  try { ranked = await structured(criticPrompt, criticFiles, outfitSelectionSchema(candidates.map(item => item.candidateID)), signal, workerIndex); }
+  finally {
+    await fs.rm(visuals.folder, { recursive: true, force: true });
+    await fs.rm(savedBoards.folder, { recursive: true, force: true });
+    await fs.rm(candidateBoards.folder, { recursive: true, force: true });
+  }
   const byID = new Map(candidates.map(item => [item.candidateID, item]));
   const selected = [];
   const selectedIDs = new Set();
@@ -359,8 +494,11 @@ async function style(body, signal = null, workerIndex = null) {
   }
   for (const candidate of candidates) {
     if (selected.length >= 3) break;
-    if (!selectedIDs.has(candidate.candidateID)) selected.push(candidate);
+    if (selectedIDs.has(candidate.candidateID)) continue;
+    selectedIDs.add(candidate.candidateID);
+    selected.push(candidate);
   }
+  if (selected.length < 3) throw new Error("Luna did not produce three valid outfit combinations. Please try again.");
   return { outfits: selected.slice(0, 3).map(({ candidateID, ...item }) => ({ ...item, id: randomUUID() })) };
 }
 
@@ -370,19 +508,60 @@ async function assess(body, signal = null, workerIndex = null) {
   const prompt = [
     "Evaluate one prospective clothing purchase against the user's existing wardrobe.",
     "Create 3 to 5 credible outfits around the candidate, but garmentIDs must contain ONLY owned IDs; the app adds the candidate itself to every collage.",
-    "Use the supplied garment analyses as visual evidence: consider neckline, sleeve volume, silhouette, fabric weight, color, print, season, occasion, and whether layers can physically sit together. Treat listed unknowns and low-confidence details as uncertain. Do not force layering merely to increase versatility.",
-    "Composition rule, including the candidate: allow at most two tops, one bottom, and one dress, with no more than two torso pieces total. Two tops, or a top and dress, are allowed ONLY as an intentional two-piece layer. A dress may be worn with one bottom when stylistically intentional. Never use two bottoms or two dresses.",
+    "The attached images are the decisive evidence. Inspect the candidate and each owned piece's actual silhouette, neckline, sleeve and hem shape, volume, fabric weight, print scale, detailing, and color. Judge any layering from those exact pictures instead of assuming that category labels make it work.",
+    "Composition rule, including the candidate: allow at most two tops, one bottom, and one dress, with no more than two torso pieces total. Never use two bottoms or two dresses.",
     "For exactly two torso pieces, layering must contain both references and mark the inner piece under and the other main or over. Use __candidate__ as the candidate's garmentID in layering; otherwise garmentIDs and layering may use only owned IDs. When fewer than two torso pieces are present, layering must be empty.",
     "Never invent missing pieces. Judge versatility, duplication, palette/category fit, occasion range, and whether combinations expose wardrobe gaps.",
     "Return buy, maybe, or skip with a concise candid summary. This is styling guidance, not financial advice or proof of fit or quality.",
     "Use the cached preferences as evidence of the user's taste, while still judging whether the candidate adds useful combinations.",
     `Cached style profile: ${JSON.stringify(body.styleProfile || null)}. Relevant inspiration examples: ${JSON.stringify(body.inspirationExamples || [])}.`,
+    "Use inspiration images as direct taste evidence for proportions and combinations, not merely color keywords.",
     `Candidate: ${JSON.stringify(body.candidate)}. Owned wardrobe: ${JSON.stringify(body.wardrobe)}.`
   ].join("\n\n");
-  const value = await structured(prompt, [], assessmentSchema(ids), signal, workerIndex);
-  const outfits = value.outfits.filter(item => hasValidOutfitComposition(item.garmentIDs, body.wardrobe, body.candidate.category, item.layering));
-  if (!outfits.length) throw new Error("No valid purchase-test outfit composition was generated. Please try again.");
-  return { ...value, outfits: outfits.map(item => ({ ...item, id: randomUUID() })) };
+  const wardrobeIDs = new Set(ids);
+  const inspirationIDs = new Set((body.inspirationExamples || []).map(item => item.id));
+  const visuals = await materializeVisualReferences([
+    { label: "purchase candidate", references: body.candidateVisual ? [body.candidateVisual] : [], allowed: id => id === "__candidate__" },
+    { label: "owned garment", references: body.garmentVisuals, allowed: id => wardrobeIDs.has(id) },
+    { label: "inspiration look", references: body.inspirationVisuals, allowed: id => inspirationIDs.has(id) }
+  ]);
+  let value;
+  try {
+    value = await structured(`${prompt}\n\nAttached visual index:\n${visuals.legend.join("\n") || "No visual references available."}`, visuals.files, assessmentSchema(ids), signal, workerIndex);
+  } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
+  const validOutfits = value.outfits.filter(item => hasValidOutfitComposition(item.garmentIDs, body.wardrobe, body.candidate, item.layering));
+  if (validOutfits.length < 3) throw new Error("Luna did not produce enough visually coherent purchase-test outfits. Please try again.");
+  return { ...value, outfits: validOutfits.map(item => ({ ...item, id: randomUUID() })) };
+}
+
+async function recommendItem(body, signal = null, workerIndex = null) {
+  const target = recommendationTarget(body.target);
+  const wardrobe = Array.isArray(body.wardrobe) ? body.wardrobe : [];
+  const selectedIDs = Array.isArray(body.selectedGarmentIDs) ? body.selectedGarmentIDs : [];
+  const eligible = eligibleRecommendationItems(wardrobe, selectedIDs, body.target);
+  if (!eligible.length) throw new Error(`There are no unused ${body.target} in this wardrobe.`);
+
+  const wardrobeIDs = new Set(wardrobe.map(item => item.id));
+  const eligibleIDs = new Set(eligible.map(item => item.id));
+  const selected = wardrobe.filter(item => selectedIDs.includes(item.id));
+  const visuals = await materializeVisualReferences([
+    { label: "piece already in collage", references: body.garmentVisuals, allowed: id => wardrobeIDs.has(id) && selectedIDs.includes(id) },
+    { label: "eligible recommendation", references: body.garmentVisuals, allowed: id => eligibleIDs.has(id) }
+  ]);
+  const prompt = [
+    "Act as Wearwell's wardrobe stylist. Recommend exactly one owned garment to add to the user's current collage.",
+    "Choose only one eligible ID. Do not invent, shop for, or mention any item outside the supplied candidates.",
+    "Use the attached garment pictures as the decisive evidence. Judge silhouette, proportion, palette, texture, print, and the visual job the added piece will perform. Text metadata is supporting evidence only.",
+    "Avoid recommending an item already in the collage. Keep the rationale to one concise sentence that explains why this exact item improves the collage.",
+    `Requested target: ${JSON.stringify({ value: body.target, ...target })}.`,
+    `Current collage: ${JSON.stringify(selected)}. Eligible candidates: ${JSON.stringify(eligible)}.`,
+    `Attached visual index:\n${visuals.legend.join("\n") || "No pictures were available; rely conservatively on metadata."}`
+  ].join("\n\n");
+  try {
+    const result = await structured(prompt, visuals.files, itemRecommendationSchema([...eligibleIDs]), signal, workerIndex);
+    if (!eligibleIDs.has(result.garmentID)) throw new Error("Luna returned an item outside the requested category.");
+    return result;
+  } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
 }
 
 async function analyzeInspiration(body) {
@@ -457,6 +636,7 @@ const server = https.createServer(tls, async (req, res) => {
     if (url.pathname === "/v1/analyze") return send(res, 200, await analyze(body));
     if (url.pathname === "/v1/inspiration/analyze") return send(res, 200, await analyzeInspiration(body));
     if (url.pathname === "/v1/style") return send(res, 200, await style(body));
+    if (url.pathname === "/v1/recommend-item") return send(res, 200, await recommendItem(body));
     if (url.pathname === "/v1/assess") return send(res, 200, await assess(body));
     if (url.pathname === "/v1/render") return send(res, 200, await render(body));
     if (url.pathname === "/v1/catalog/edit") return send(res, 200, await editCatalog(body));
