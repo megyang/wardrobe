@@ -36,8 +36,24 @@ export function outfitSelectionSchema(candidateIDs) {
 }
 
 export function itemRecommendationSchema(candidateIDs) {
-  return { type: "object", additionalProperties: false, required: ["garmentID", "rationale"], properties: {
-    garmentID: { type: "string", enum: candidateIDs },
+  return { type: "object", additionalProperties: false, required: ["garmentIDs", "rationale"], properties: {
+    garmentIDs: { type: "array", minItems: 1, maxItems: Math.min(2, candidateIDs.length), items: { type: "string", enum: candidateIDs } },
     rationale: { type: "string" }
+  }};
+}
+
+export function wardrobeGapSchema(categories, subcategories) {
+  return { type: "object", additionalProperties: false, required: ["gaps"], properties: {
+    gaps: { type: "array", minItems: 1, maxItems: 3, items: {
+      type: "object", additionalProperties: false,
+      required: ["title", "category", "subcategory", "rationale", "searchQuery"],
+      properties: {
+        title: { type: "string" },
+        category: { type: "string", enum: categories },
+        subcategory: { type: "string", enum: ["none", ...subcategories] },
+        rationale: { type: "string" },
+        searchQuery: { type: "string" }
+      }
+    }}
   }};
 }

@@ -29,9 +29,9 @@ struct RootTabView: View {
             NavigationStack { WishlistView(showSettings: $showSettings) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Shop", systemImage: "bag") }.tag(3)
-            NavigationStack { AddClothesView(showSettings: $showSettings) }
+            NavigationStack { SavedItemsView(showSettings: $showSettings) }
                 .keyboardDismissToolbar()
-                .tabItem { Label("Add", systemImage: "plus.circle.fill") }.tag(4)
+                .tabItem { Label("Saved", systemImage: "heart.fill") }.tag(4)
         }
         .background(WearwellTheme.cream)
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() }.keyboardDismissToolbar() }

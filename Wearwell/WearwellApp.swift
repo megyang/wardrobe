@@ -21,10 +21,20 @@ enum WearwellSchemaV2: VersionedSchema {
     ]
 }
 
+enum WearwellSchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+    static let models: [any PersistentModel.Type] = [
+        Garment.self, WishlistItem.self, Outfit.self, Visualization.self,
+        ReferencePhoto.self, ImportDraft.self, InspirationLook.self,
+        StyleProfile.self, StyleGeneration.self, AssetBlob.self,
+        ShoppingProfile.self, ShopFeedSnapshot.self, PurchaseNeed.self
+    ]
+}
+
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV2.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV3.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,

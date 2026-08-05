@@ -10,6 +10,7 @@ struct WardrobeView: View {
     @State private var search = ""
     @State private var category: GarmentCategory?
     @State private var subcategory: GarmentSubcategory?
+    @State private var showAdd = false
 
     private var filtered: [Garment] {
         garments.filter { garment in
@@ -51,7 +52,18 @@ struct WardrobeView: View {
             }
         }
         .searchable(text: $search, prompt: "Search clothes")
-        .toolbar { SettingsButton(isPresented: $showSettings) }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showAdd = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add clothes")
+            }
+            ToolbarItem(placement: .topBarTrailing) { SettingsButton(isPresented: $showSettings) }
+        }
+        .sheet(isPresented: $showAdd) {
+            NavigationStack {
+                AddClothesView(showSettings: $showSettings)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showAdd = false } } }
+            }.keyboardDismissToolbar()
+        }
         .task(id: cutoutPreparationKey) {
             let names = cutoutNames
             await Task.detached(priority: .utility) {

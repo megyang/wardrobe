@@ -7,7 +7,7 @@ import { hasValidOutfitComposition } from "../outfit-rules.mjs";
 import { SerialQueue } from "../serial-queue.mjs";
 import { withAbortTimeout } from "../timeout.mjs";
 import { PriorityQueue } from "../priority-queue.mjs";
-import { outfitSchema, outfitSelectionSchema } from "../response-schemas.mjs";
+import { itemRecommendationSchema, outfitSchema, outfitSelectionSchema, wardrobeGapSchema } from "../response-schemas.mjs";
 import { inspirationPrompt, inspirationSchema } from "../inspiration.mjs";
 
 test("purchase layout contract keeps candidate outside owned IDs", () => {
@@ -46,6 +46,22 @@ test("fashion critic selects three known candidates", () => {
   assert.equal(selection.minItems, 3);
   assert.equal(selection.maxItems, 3);
   assert.deepEqual(selection.items.properties.candidateID.enum, ["candidate-a", "candidate-b", "candidate-c"]);
+});
+
+test("collage recommendations return up to two owned IDs", () => {
+  const schema = itemRecommendationSchema(["one", "two", "three"]);
+  const ids = schema.properties.garmentIDs;
+  assert.equal(ids.minItems, 1);
+  assert.equal(ids.maxItems, 2);
+  assert.deepEqual(ids.items.enum, ["one", "two", "three"]);
+});
+
+test("wardrobe gaps stay broad and taxonomy-backed", () => {
+  const schema = wardrobeGapSchema(["tops", "bottoms"], ["tank_top", "pants"]);
+  const gap = schema.properties.gaps.items;
+  assert.deepEqual(gap.properties.category.enum, ["tops", "bottoms"]);
+  assert.deepEqual(gap.properties.subcategory.enum, ["none", "tank_top", "pants"]);
+  assert.ok(gap.required.includes("searchQuery"));
 });
 
 test("outfits allow explicit two-piece torso layers but only one bottom and dress", () => {

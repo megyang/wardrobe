@@ -10,6 +10,10 @@ struct CollageEditorView: View {
     let wishlistItem: WishlistItem?
 
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
+    @Query private var styleProfiles: [StyleProfile]
+    @Query private var inspirations: [InspirationLook]
+    @Query(sort: \PurchaseNeed.createdAt, order: .reverse) private var purchaseNeeds: [PurchaseNeed]
+    @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
@@ -23,6 +27,10 @@ struct CollageEditorView: View {
     @State private var preparedCount = 0
     @State private var preparationTotal = 0
     @State private var preparationStartedAt = Date.now
+    @State private var showRecommendationPicker = false
+    @State private var recommendationCategory: GarmentCategory?
+    @State private var recommending = false
+    @State private var recommendationNotice: String?
 
     init(origin: OutfitOrigin = .manual, title: String = "New outfit", rationale: String = "", items: [LayoutItem] = [], wishlistItem: WishlistItem? = nil) {
         existingOutfit = nil
@@ -77,16 +85,33 @@ struct CollageEditorView: View {
             }
         }
         .sheet(isPresented: $showPicker) { garmentPicker }
+        .sheet(isPresented: $showRecommendationPicker) { recommendationPicker }
+        .alert("Luna", isPresented: Binding(
+            get: { recommendationNotice != nil },
+            set: { if !$0 { recommendationNotice = nil } }
+        )) {
+            Button("OK") { recommendationNotice = nil }
+        } message: {
+            Text(recommendationNotice ?? "")
+        }
         .task(id: preparationKey) { await prepareCollageImages() }
     }
 
     private var controls: some View {
-        HStack(spacing: 18) {
-            Button { showPicker = true } label: { Label("Add", systemImage: "plus") }
-            Button { snapLayout() } label: { Label("Arrange", systemImage: "rectangle.3.group") }.disabled(items.isEmpty)
-            Button { duplicateSelected() } label: { Label("Duplicate piece", systemImage: "plus.square.on.square") }.disabled(selectedID == nil)
-            Button(role: .destructive) { items.removeAll { $0.id == selectedID }; selectedID = nil } label: { Image(systemName: "trash") }.disabled(selectedID == nil)
-        }.font(.caption.weight(.semibold)).padding().frame(maxWidth: .infinity).background(.ultraThinMaterial)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 18) {
+                Button { showPicker = true } label: { Label("Add", systemImage: "plus") }
+                Button { recommendationCategory = nil; showRecommendationPicker = true } label: {
+                    Label(recommending ? "Asking Luna" : "Ask Luna", systemImage: "sparkles")
+                }
+                .disabled(recommending)
+                Button { snapLayout() } label: { Label("Arrange", systemImage: "rectangle.3.group") }.disabled(items.isEmpty)
+                Button { duplicateSelected() } label: { Label("Duplicate piece", systemImage: "plus.square.on.square") }.disabled(selectedID == nil)
+                Button(role: .destructive) { items.removeAll { $0.id == selectedID }; selectedID = nil } label: { Image(systemName: "trash") }.disabled(selectedID == nil)
+            }
+            .font(.caption.weight(.semibold)).padding()
+        }
+        .frame(maxWidth: .infinity).background(.ultraThinMaterial)
     }
 
     private var garmentPicker: some View {
@@ -121,6 +146,56 @@ struct CollageEditorView: View {
             .toolbar { Button("Done") { showPicker = false } }
         }
         .keyboardDismissToolbar()
+    }
+
+    private var recommendationPicker: some View {
+        NavigationStack {
+            List {
+                if let category = recommendationCategory {
+                    Section("Choose a type") {
+                        Button { requestRecommendation(category: category, subcategory: nil) } label: {
+                            Label("All \(category.title)", systemImage: "square.grid.2x2")
+                        }
+                        ForEach(GarmentSubcategory.options(for: category)) { subcategory in
+                            Button { requestRecommendation(category: category, subcategory: subcategory) } label: {
+                                Text(subcategory.title)
+                            }
+                        }
+                    }
+                } else {
+                    Section("Finish this collage") {
+                        Button { requestOwnedRecommendations() } label: {
+                            Label("Add 1–2 from my closet", systemImage: "tshirt")
+                        }
+                        Button { requestPurchaseRecommendations() } label: {
+                            Label("Suggest 1–3 things to buy", systemImage: "bag.badge.plus")
+                        }
+                    }
+                    Section("Or choose an owned category") {
+                        ForEach(GarmentCategory.allCases) { category in
+                            Button { recommendationCategory = category } label: {
+                                HStack {
+                                    Text(category.title)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(recommendationCategory?.title ?? "Ask Luna")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if recommendationCategory != nil {
+                        Button { recommendationCategory = nil } label: { Label("Categories", systemImage: "chevron.left") }
+                    } else {
+                        Button("Cancel") { showRecommendationPicker = false }
+                    }
+                }
+            }
+        }
     }
 
     private var filteredGarments: [Garment] {
@@ -197,6 +272,78 @@ struct CollageEditorView: View {
     }
     private func add(_ garment: Garment) { let z = (items.map(\.zIndex).max() ?? 0) + 1; items.append(LayoutItem(garmentID: garment.id, x: 0.5, y: 0.5, zIndex: z)) }
     private func add(_ candidate: WishlistItem) { let z = (items.map(\.zIndex).max() ?? 0) + 1; items.append(LayoutItem(wishlistItemID: candidate.id, x: 0.5, y: 0.5, zIndex: z)) }
+    private func requestRecommendation(category: GarmentCategory, subcategory: GarmentSubcategory?) {
+        showRecommendationPicker = false
+        Task { await recommend(category: category, subcategory: subcategory) }
+    }
+    private func requestOwnedRecommendations() {
+        showRecommendationPicker = false
+        Task { await recommend(category: nil, subcategory: nil) }
+    }
+    private func requestPurchaseRecommendations() {
+        showRecommendationPicker = false
+        Task { await recommendGaps() }
+    }
+    private func recommend(category: GarmentCategory?, subcategory: GarmentSubcategory?) async {
+        guard companion.isPaired else {
+            recommendationNotice = "Pair with the Mac companion in Settings before asking Luna."
+            return
+        }
+        let selectedIDs = Array(Set(items.compactMap(\.garmentID)))
+        let eligible = garments.filter {
+            (category == nil || $0.category == category) && (subcategory == nil || $0.subcategory == subcategory) && !selectedIDs.contains($0.id)
+        }
+        let targetName = subcategory?.title ?? category?.title ?? "pieces"
+        guard !eligible.isEmpty else {
+            recommendationNotice = "There are no unused \(targetName.lowercased()) in your wardrobe."
+            return
+        }
+        recommending = true
+        defer { recommending = false }
+        do {
+            let result = try await companion.recommendItems(
+                garments: garments, selectedGarmentIDs: selectedIDs,
+                category: category, subcategory: subcategory
+            )
+            let additions = result.garmentIDs.compactMap { id in eligible.first { $0.id == id } }
+            guard additions.count == result.garmentIDs.count else { throw ClientError.invalidResponse }
+            additions.forEach { add($0) }
+            selectedID = items.last?.id
+            recommendationNotice = "Added \(additions.map(\.label).joined(separator: " + ")). \(result.rationale)"
+        } catch {
+            recommendationNotice = error.localizedDescription
+        }
+    }
+    private func recommendGaps() async {
+        guard companion.isPaired else {
+            recommendationNotice = "Pair with the Mac companion in Settings before asking Luna."
+            return
+        }
+        recommending = true
+        defer { recommending = false }
+        do {
+            let gaps = try await companion.recommendWardrobeGaps(
+                garments: garments, selectedGarmentIDs: [],
+                existingNeeds: purchaseNeeds, styleProfile: styleProfiles.first, inspirations: inspirations
+            )
+            let existing = Set(purchaseNeeds.filter { !$0.isCompleted }.map { $0.title.lowercased() })
+            let fresh = gaps.filter { !existing.contains($0.title.lowercased()) }
+            for gap in fresh {
+                context.insert(PurchaseNeed(
+                    title: gap.title,
+                    category: GarmentCategory(rawValue: gap.category),
+                    subcategory: gap.subcategory == "none" ? nil : GarmentSubcategory(rawValue: gap.subcategory),
+                    rationale: gap.rationale, searchQuery: gap.searchQuery, isLunaSuggested: true
+                ))
+            }
+            try context.save()
+            recommendationNotice = fresh.isEmpty
+                ? "Your current On the lookout list already covers Luna's suggestions."
+                : "Saved to On the lookout: \(fresh.map(\.title).joined(separator: ", "))."
+        } catch {
+            recommendationNotice = error.localizedDescription
+        }
+    }
     private func itemBinding(for snapshot: LayoutItem) -> Binding<LayoutItem>? {
         guard items.contains(where: { $0.id == snapshot.id }) else { return nil }
         return Binding(

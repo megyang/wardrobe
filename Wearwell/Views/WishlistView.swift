@@ -4,9 +4,10 @@ import SwiftUI
 
 struct WishlistView: View {
     @Binding var showSettings: Bool
+    let initialQuery: String
+    let autoSearch: Bool
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
-    @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
     @Query private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
     @Query(sort: \InspirationLook.updatedAt, order: .reverse) private var inspirations: [InspirationLook]
@@ -23,6 +24,13 @@ struct WishlistView: View {
     @State private var shopError: String?
     @State private var showShoppingPreferences = false
     @State private var didAutoRefresh = false
+
+    init(showSettings: Binding<Bool>, initialQuery: String = "", autoSearch: Bool = false) {
+        _showSettings = showSettings
+        self.initialQuery = initialQuery
+        self.autoSearch = autoSearch
+        _shopQuery = State(initialValue: initialQuery)
+    }
 
     private var shoppingProfile: ShoppingProfile? { shoppingProfiles.first }
     private var activeFeed: ShopFeedSnapshot? { feedSnapshots.first { ["queued", "processing"].contains($0.state) } }
@@ -136,10 +144,6 @@ struct WishlistView: View {
                             .frame(minHeight: 180)
                     }
 
-                    if !candidates.isEmpty {
-                        Text("Previous purchase tests").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                        ForEach(candidates) { item in NavigationLink { WishlistDetailView(item: item) } label: { WishlistRow(item: item) }.buttonStyle(.plain) }
-                    }
                 }.padding()
             }
             .refreshable { await startShopSearch(forcePersonalized: true) }
@@ -166,7 +170,9 @@ struct WishlistView: View {
             let profile = ensureShoppingProfile()
             guard !didAutoRefresh else { return }
             didAutoRefresh = true
-            if activeFeed == nil, latestFeed?.isFresh != true, companion.status == .available {
+            if autoSearch, !initialQuery.isEmpty, activeFeed == nil, companion.status == .available {
+                await startShopSearch(profileOverride: profile)
+            } else if activeFeed == nil, latestFeed?.isFresh != true, companion.status == .available {
                 await startShopSearch(forcePersonalized: true, profileOverride: profile)
             }
         }
@@ -326,6 +332,120 @@ struct WishlistView: View {
             await create(from: image, sourceURL: product.canonicalURL, discovery: product, managesWorkingState: false)
         } catch { self.error = error.localizedDescription }
         working = false
+    }
+}
+
+struct SavedItemsView: View {
+    @Binding var showSettings: Bool
+    @EnvironmentObject private var companion: CompanionClient
+    @Environment(\.modelContext) private var context
+    @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
+    @Query(sort: \PurchaseNeed.createdAt, order: .reverse) private var needs: [PurchaseNeed]
+    @Query private var garments: [Garment]
+    @Query private var styleProfiles: [StyleProfile]
+    @Query private var inspirations: [InspirationLook]
+    @State private var newNeed = ""
+    @State private var recommending = false
+    @State private var error: String?
+
+    private var activeNeeds: [PurchaseNeed] { needs.filter { !$0.isCompleted } }
+
+    var body: some View {
+        ZStack {
+            WearwellTheme.cream.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    EditorialHeader(
+                        eyebrow: "Saved for later", title: "Wishlist",
+                        subtitle: "Keep broad wardrobe needs separate from specific products you're considering."
+                    )
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("On the lookout").font(.title2.bold())
+                        Text("Save a general need—like capris—and Luna will remember it when finding specific pieces.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        HStack {
+                            TextField("e.g. capris or a lightweight cover-up", text: $newNeed)
+                                .textInputAutocapitalization(.sentences)
+                                .submitLabel(.done)
+                                .onSubmit(addNeed)
+                                .padding(11).background(.white, in: RoundedRectangle(cornerRadius: 10))
+                            Button(action: addNeed) { Image(systemName: "plus") }
+                                .buttonStyle(.borderedProminent).disabled(trimmedNeed.isEmpty)
+                        }
+                        Button { Task { await askLuna() } } label: {
+                            Label(recommending ? "Luna is checking…" : "Ask Luna what I'm missing", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.bordered).disabled(recommending || companion.status != .available || garments.isEmpty)
+                        if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                        if activeNeeds.isEmpty {
+                            Text("Nothing on your list yet.").font(.subheadline).foregroundStyle(.secondary).padding(.vertical, 10)
+                        } else {
+                            ForEach(activeNeeds) { need in needCard(need) }
+                        }
+                    }
+                    .padding(20).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+
+                    Text("Specific items").font(.title2.bold())
+                    if candidates.isEmpty {
+                        EmptyState(icon: "heart", title: "No saved products", message: "Use Should I buy this? in Shop to save and test a specific item.")
+                            .frame(minHeight: 180)
+                    } else {
+                        ForEach(candidates) { item in
+                            NavigationLink { WishlistDetailView(item: item) } label: { WishlistRow(item: item) }.buttonStyle(.plain)
+                        }
+                    }
+                }.padding()
+            }
+        }
+        .toolbar { SettingsButton(isPresented: $showSettings) }
+    }
+
+    private var trimmedNeed: String { newNeed.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func addNeed() {
+        let value = trimmedNeed
+        guard !value.isEmpty, !activeNeeds.contains(where: { $0.title.localizedCaseInsensitiveCompare(value) == .orderedSame }) else { return }
+        context.insert(PurchaseNeed(title: value)); try? context.save(); newNeed = ""
+    }
+    private func needCard(_ need: PurchaseNeed) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(need.title).font(.headline)
+                    if need.isLunaSuggested { Text("LUNA SUGGESTED").font(.caption2.bold()).foregroundStyle(WearwellTheme.sage) }
+                }
+                Spacer()
+                Menu {
+                    Button("Mark found", systemImage: "checkmark") { need.isCompleted = true; need.updatedAt = .now; try? context.save() }
+                    Button("Delete", systemImage: "trash", role: .destructive) { context.delete(need); try? context.save() }
+                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("More options for \(need.title)")
+            }
+            if !need.rationale.isEmpty { Text(need.rationale).font(.subheadline).foregroundStyle(.secondary) }
+            NavigationLink {
+                WishlistView(showSettings: $showSettings, initialQuery: need.searchQuery, autoSearch: true)
+            } label: {
+                Label("Find specific pieces", systemImage: "magnifyingglass")
+            }.buttonStyle(.borderedProminent)
+        }
+        .padding(14).background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 14))
+    }
+    private func askLuna() async {
+        recommending = true; error = nil
+        defer { recommending = false }
+        do {
+            let gaps = try await companion.recommendWardrobeGaps(
+                garments: garments, selectedGarmentIDs: [], existingNeeds: needs,
+                styleProfile: styleProfiles.first, inspirations: inspirations
+            )
+            let existing = Set(activeNeeds.map { $0.title.lowercased() })
+            for gap in gaps where !existing.contains(gap.title.lowercased()) {
+                context.insert(PurchaseNeed(
+                    title: gap.title, category: GarmentCategory(rawValue: gap.category),
+                    subcategory: gap.subcategory == "none" ? nil : GarmentSubcategory(rawValue: gap.subcategory),
+                    rationale: gap.rationale, searchQuery: gap.searchQuery, isLunaSuggested: true
+                ))
+            }
+            try context.save()
+        } catch { self.error = error.localizedDescription }
     }
 }
 

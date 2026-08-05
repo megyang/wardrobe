@@ -8,13 +8,13 @@ import sharp from "sharp";
 import { Bonjour } from "bonjour-service";
 import { Codex } from "@openai/codex-sdk";
 import { catalogEditPrompt, catalogPrompt } from "./prompts.mjs";
-import { SUBCATEGORY_VALUES, normalizeSubcategory } from "./category-taxonomy.mjs";
+import { SUBCATEGORIES, SUBCATEGORY_VALUES, normalizeSubcategory } from "./category-taxonomy.mjs";
 import { JOB_TTL_MS, PROCESSING_TIMEOUT_MS, isAnalysisJobOverdue } from "./job-lifecycle.mjs";
 import { hasValidOutfitComposition } from "./outfit-rules.mjs";
 import { SerialQueue } from "./serial-queue.mjs";
 import { withAbortTimeout } from "./timeout.mjs";
 import { PriorityQueue } from "./priority-queue.mjs";
-import { assessmentSchema, itemRecommendationSchema, outfitSchema, outfitSelectionSchema } from "./response-schemas.mjs";
+import { assessmentSchema, itemRecommendationSchema, outfitSchema, outfitSelectionSchema, wardrobeGapSchema } from "./response-schemas.mjs";
 import { eligibleRecommendationItems, recommendationTarget } from "./item-recommendation.mjs";
 import { inspirationPrompt, inspirationSchema, STYLE_ANALYSIS_VERSION } from "./inspiration.mjs";
 import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
@@ -788,8 +788,8 @@ async function recommendItem(body, signal = null, workerIndex = null) {
     { label: "eligible recommendation", references: body.garmentVisuals, allowed: id => eligibleIDs.has(id) }
   ]);
   const prompt = [
-    "Act as Wearwell's wardrobe stylist. Recommend exactly one owned garment to add to the user's current collage.",
-    "Choose only one eligible ID. Do not invent, shop for, or mention any item outside the supplied candidates.",
+    "Act as Wearwell's wardrobe stylist. Recommend one or two owned garments to add to the user's current collage.",
+    "Choose only eligible IDs. Do not invent, shop for, or mention any item outside the supplied candidates.",
     "Use the attached garment pictures as the decisive evidence. Judge silhouette, proportion, palette, texture, print, and the visual job the added piece will perform. Text metadata is supporting evidence only.",
     "Avoid recommending an item already in the collage. Keep the rationale to one concise sentence that explains why this exact item improves the collage.",
     `Requested target: ${JSON.stringify(target)}.`,
@@ -798,8 +798,38 @@ async function recommendItem(body, signal = null, workerIndex = null) {
   ].join("\n\n");
   try {
     const result = await structured(prompt, visuals.files, itemRecommendationSchema([...eligibleIDs]), signal, workerIndex);
-    if (!eligibleIDs.has(result.garmentID)) throw new Error("Luna returned an item outside the requested category.");
-    return result;
+    const uniqueIDs = [...new Set(result.garmentIDs || [])];
+    if (!uniqueIDs.length || uniqueIDs.some(id => !eligibleIDs.has(id))) throw new Error("Luna returned an item outside the requested category.");
+    return { ...result, garmentIDs: uniqueIDs.slice(0, 2) };
+  } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
+}
+
+async function recommendWardrobeGaps(body, signal = null, workerIndex = null) {
+  const wardrobe = Array.isArray(body.wardrobe) ? body.wardrobe : [];
+  const existingNeeds = Array.isArray(body.existingNeeds) ? body.existingNeeds.slice(0, 80) : [];
+  const wardrobeIDs = new Set(wardrobe.map(item => String(item.id)));
+  const inspirationIDs = new Set((body.inspirationExamples || []).map(item => String(item.id)));
+  const visuals = await materializeVisualReferences([
+    { label: "owned garment", references: body.garmentVisuals, allowed: id => wardrobeIDs.has(id) },
+    { label: "inspiration look", references: body.inspirationVisuals, allowed: id => inspirationIDs.has(id) }
+  ]);
+  const prompt = [
+    "Act as Wearwell's thoughtful wardrobe editor. Identify one to three broad wardrobe gaps worth watching for, not exact products or brands.",
+    "Audit the complete owned wardrobe as one system. Look for connector categories that would make several existing pieces work together in more outfits. Never base this analysis on one current collage or one isolated outfit.",
+    "Never recommend another version of a basic the user already has enough of; prefer a complementary styling role, silhouette, layer, shoe, or accessory that unlocks multiple combinations across the wardrobe.",
+    "Base the gaps on the attached inspiration looks and their style analysis, then use sound wardrobe-building principles only where the inspiration is silent.",
+    "Do not repeat, paraphrase, or closely duplicate an existing saved need. Keep titles concrete and general, such as 'lightweight cover-up' or 'cropped pants'; searchQuery may add useful style and color cues but must remain broad enough for product discovery.",
+    `Existing saved needs to avoid: ${JSON.stringify(existingNeeds)}.`,
+    `Owned wardrobe metadata: ${JSON.stringify(wardrobe.slice(0, 300))}.`,
+    `Style profile: ${JSON.stringify(body.styleProfile || null)}. Inspiration analyses: ${JSON.stringify(body.inspirationExamples || [])}.`,
+    `Evidence legend:\n${visuals.legend.join("\n") || "No pictures were available; reason conservatively from metadata."}`
+  ].join("\n\n");
+  try {
+    return await structured(
+      prompt, visuals.files,
+      wardrobeGapSchema(Object.keys(SUBCATEGORIES), [...new Set(Object.values(SUBCATEGORIES).flat())]),
+      signal, workerIndex
+    );
   } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
 }
 
@@ -877,6 +907,7 @@ const server = https.createServer(tls, async (req, res) => {
     if (url.pathname === "/v1/inspiration/analyze") return send(res, 200, await analyzeInspiration(body));
     if (url.pathname === "/v1/style") return send(res, 200, await style(body));
     if (url.pathname === "/v1/recommend-item") return send(res, 200, await recommendItem(body));
+    if (url.pathname === "/v1/wardrobe-gaps") return send(res, 200, await recommendWardrobeGaps(body));
     if (url.pathname === "/v1/assess") return send(res, 200, await assess(body));
     if (url.pathname === "/v1/render") return send(res, 200, await render(body));
     if (url.pathname === "/v1/catalog/edit") return send(res, 200, await editCatalog(body));

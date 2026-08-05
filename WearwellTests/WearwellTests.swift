@@ -307,6 +307,16 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(GarmentSubcategory(rawValue: "skirt"), .skirt)
     }
 
+    func testEveryMainCategoryOffersItsExistingSubcategories() {
+        XCTAssertEqual(GarmentCategory.allCases.map(\.rawValue), ["tops", "bottoms", "outerwear", "dresses", "shoes", "accessories"])
+        XCTAssertTrue(GarmentSubcategory.options(for: .tops).contains(.blouse))
+        XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.pants))
+        XCTAssertTrue(GarmentSubcategory.options(for: .outerwear).contains(.coat))
+        XCTAssertTrue(GarmentSubcategory.options(for: .accessories).contains(.hat))
+        XCTAssertTrue(GarmentSubcategory.options(for: .dresses).isEmpty)
+        XCTAssertTrue(GarmentSubcategory.options(for: .shoes).isEmpty)
+    }
+
     func testAlphaCropPreservesAWhiteGarment() {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false

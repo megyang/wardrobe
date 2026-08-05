@@ -265,23 +265,48 @@ final class CompanionClient: ObservableObject {
         return OutfitValidator.validateAI(decoded.outfits, garments: garments, anchorID: anchorID)
     }
 
-    func recommendItem(garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory, subcategory: GarmentSubcategory?) async throws -> ItemRecommendationDTO {
+    func recommendItems(garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory? = nil, subcategory: GarmentSubcategory? = nil) async throws -> ItemRecommendationDTO {
         status = .busy; defer { status = .available }
         let selected = Set(selectedGarmentIDs)
-        let matches: (Garment) -> Bool = { $0.category == category && (subcategory == nil || $0.subcategory == subcategory) }
+        let matches: (Garment) -> Bool = { (category == nil || $0.category == category) && (subcategory == nil || $0.subcategory == subcategory) }
         let relevant = garments.filter { selected.contains($0.id) || matches($0) }
         let visuals = await visualReferences(relevant.map {
             VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
         }, byteBudget: 11 * 1024 * 1024)
         let payload = ItemRecommendationRequest(
             wardrobe: garments.map(GarmentSummary.init), selectedGarmentIDs: selectedGarmentIDs,
-            category: category.rawValue, subcategory: subcategory?.rawValue, garmentVisuals: visuals
+            category: category?.rawValue ?? "", subcategory: subcategory?.rawValue, garmentVisuals: visuals
         )
         let data = try await send(path: "v1/recommend-item", body: payload)
         let result = try JSONDecoder().decode(ItemRecommendationDTO.self, from: data)
-        guard let garment = garments.first(where: { $0.id == result.garmentID }),
-              !selected.contains(result.garmentID), matches(garment) else { throw ClientError.invalidResponse }
+        guard !result.garmentIDs.isEmpty, result.garmentIDs.count <= 2,
+              Set(result.garmentIDs).count == result.garmentIDs.count,
+              result.garmentIDs.allSatisfy({ id in garments.contains { $0.id == id && !selected.contains(id) && matches($0) } })
+        else { throw ClientError.invalidResponse }
         return result
+    }
+
+    func recommendWardrobeGaps(
+        garments: [Garment], selectedGarmentIDs: [UUID], existingNeeds: [PurchaseNeed],
+        styleProfile: StyleProfile?, inspirations: [InspirationLook]
+    ) async throws -> [WardrobeGapDTO] {
+        status = .busy; defer { status = .available }
+        let readyInspirations = inspirations.filter { $0.state == "ready" && $0.analysis != nil }
+        let relevantIDs = Set(readyInspirations.map(\.id))
+        let payload = WardrobeGapRequest(
+            wardrobe: garments.map(GarmentSummary.init), selectedGarmentIDs: selectedGarmentIDs,
+            existingNeeds: existingNeeds.filter { !$0.isCompleted }.map { $0.title },
+            styleProfile: styleProfile?.profile,
+            inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
+            garmentVisuals: await visualReferences(garments.map {
+                VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
+            }, byteBudget: 10 * 1024 * 1024),
+            inspirationVisuals: await visualReferences(readyInspirations.filter { relevantIDs.contains($0.id) }.map {
+                VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
+            }, byteBudget: 3 * 1024 * 1024)
+        )
+        let data = try await send(path: "v1/wardrobe-gaps", body: payload)
+        return try JSONDecoder().decode(WardrobeGapResponseDTO.self, from: data).gaps
     }
 
     func submitStyle(garments: [Garment], occasion: String, weather: String, mood: String, anchorID: UUID?, request: String, styleProfile: StyleProfile?, inspirations: [InspirationLook], recentOutfits: [OutfitSuggestionDTO] = [], outfitFeedback: [OutfitFeedbackDTO] = [], savedOutfits: [SavedOutfitExampleDTO] = [], outfitEdits: [OutfitEditFeedbackDTO] = []) async throws -> StyleJobDTO {
@@ -681,7 +706,7 @@ private struct ItemRecommendationRequest: Codable {
     let garmentVisuals: [VisualReference]
 }
 struct ItemRecommendationDTO: Codable, Equatable {
-    let garmentID: UUID
+    let garmentIDs: [UUID]
     let rationale: String
 }
 struct StyleResponse: Codable { let outfits: [OutfitSuggestionDTO] }
@@ -699,6 +724,14 @@ private struct ShopDiscoveryRequest: Codable {
     let preferences: ShoppingProfileDTO
     let styleProfile: StyleProfileDTO?
     let wardrobe: [GarmentSummary]
+    let inspirationExamples: [InspirationExample]
+    let garmentVisuals, inspirationVisuals: [VisualReference]
+}
+private struct WardrobeGapRequest: Codable {
+    let wardrobe: [GarmentSummary]
+    let selectedGarmentIDs: [UUID]
+    let existingNeeds: [String]
+    let styleProfile: StyleProfileDTO?
     let inspirationExamples: [InspirationExample]
     let garmentVisuals, inspirationVisuals: [VisualReference]
 }

@@ -12,6 +12,8 @@ final class ShopTests: XCTestCase {
             preferences: ShoppingProfileDTO(country: "CA", currency: "CAD", sizes: ["tops": "M"], budgets: ["tops": 120])
         ))
         source.mainContext.insert(ShopFeedSnapshot(query: "Disposable cached picks", state: "complete"))
+        let needID = UUID()
+        source.mainContext.insert(PurchaseNeed(id: needID, title: "Capris", category: .bottoms, rationale: "A useful cropped proportion", searchQuery: "mid-rise capri pants", isLunaSuggested: true))
         try source.mainContext.save()
 
         let document = try await BackupService.makeDocument(context: source.mainContext)
@@ -21,10 +23,13 @@ final class ShopTests: XCTestCase {
 
         let profiles = try destination.mainContext.fetch(FetchDescriptor<ShoppingProfile>())
         let snapshots = try destination.mainContext.fetch(FetchDescriptor<ShopFeedSnapshot>())
+        let needs = try destination.mainContext.fetch(FetchDescriptor<PurchaseNeed>())
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.currency, "CAD")
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.sizes["tops"], "M")
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.selectedAudience, .women)
         XCTAssertTrue(snapshots.isEmpty, "Shop feeds are disposable cache and must not be restored")
+        XCTAssertEqual(needs.first(where: { $0.id == needID })?.title, "Capris")
+        XCTAssertEqual(needs.first(where: { $0.id == needID })?.searchQuery, "mid-rise capri pants")
     }
 
     func testShoppingProfileNormalizesOnlySafeRetailerDomains() {
@@ -77,6 +82,15 @@ final class ShopTests: XCTestCase {
         XCTAssertFalse(missingOriginal.hasVerifiedMarkdown)
     }
 
+    func testPurchaseNeedKeepsBroadSearchIntent() {
+        let need = PurchaseNeed(title: "Capris", category: .bottoms, subcategory: .pants, rationale: "Adds a cropped proportion", searchQuery: "mid-rise capri pants")
+        XCTAssertEqual(need.title, "Capris")
+        XCTAssertEqual(need.category, .bottoms)
+        XCTAssertEqual(need.subcategory, .pants)
+        XCTAssertEqual(need.searchQuery, "mid-rise capri pants")
+        XCTAssertFalse(need.isCompleted)
+    }
+
     func testOldCachedProductDecodesWithoutVisualProvenance() throws {
         let json = #"{"id":"old","canonicalURL":"https://example.com/p","retailer":"Example","domain":"example.com","title":"Top","imageURL":"https://example.com/p.jpg","category":"tops","colors":[],"currentPrice":40,"originalPrice":null,"currency":"USD","verifiedAt":"2026-08-05T12:00:00Z","confidence":0.8,"rationale":"Useful","matchedWardrobeGap":"layer"}"#.data(using: .utf8)!
         let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)
@@ -87,7 +101,7 @@ final class ShopTests: XCTestCase {
 
     @MainActor
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: WearwellSchemaV2.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV3.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

@@ -139,6 +139,52 @@ struct ShopFeedDTO: Codable, Equatable {
     let products: [DiscoveredProductDTO]
 }
 
+struct WardrobeGapDTO: Codable, Equatable {
+    let title: String
+    let category: String
+    let subcategory: String
+    let rationale: String
+    let searchQuery: String
+}
+
+struct WardrobeGapResponseDTO: Codable, Equatable {
+    let gaps: [WardrobeGapDTO]
+}
+
+@Model final class PurchaseNeed {
+    var id: UUID
+    var title: String
+    var categoryRaw: String
+    var subcategoryRaw: String?
+    var rationale: String
+    var searchQuery: String
+    var isLunaSuggested: Bool
+    var isCompleted: Bool
+    var createdAt: Date
+    var updatedAt: Date
+
+    var category: GarmentCategory? {
+        get { GarmentCategory(rawValue: categoryRaw) }
+        set { categoryRaw = newValue?.rawValue ?? "" }
+    }
+    var subcategory: GarmentSubcategory? {
+        get { subcategoryRaw.flatMap(GarmentSubcategory.init(rawValue:)) }
+        set { subcategoryRaw = newValue?.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(), title: String, category: GarmentCategory? = nil,
+        subcategory: GarmentSubcategory? = nil, rationale: String = "",
+        searchQuery: String? = nil, isLunaSuggested: Bool = false,
+        isCompleted: Bool = false, createdAt: Date = .now
+    ) {
+        self.id = id; self.title = title; categoryRaw = category?.rawValue ?? ""
+        subcategoryRaw = subcategory?.rawValue; self.rationale = rationale
+        self.searchQuery = searchQuery ?? title; self.isLunaSuggested = isLunaSuggested
+        self.isCompleted = isCompleted; self.createdAt = createdAt; updatedAt = createdAt
+    }
+}
+
 @Model final class ShoppingProfile {
     var id: UUID
     var profileJSON: Data
