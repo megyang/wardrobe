@@ -7,7 +7,9 @@ export const BUNDLED_RETAILERS = Object.freeze([
   { name: "Uniqlo", domain: "uniqlo.com" },
   { name: "Hollister", domain: "hollisterco.com" },
   { name: "Canton Collective", domain: "cantoncollective.com" },
-  { name: "Codibook", domain: "codibook.net" }
+  { name: "Codibook", domain: "codibook.net" },
+  { name: "COS", domain: "cos.com" },
+  { name: "OAK + FORT", domain: "oakandfort.com" }
 ]);
 
 const MAX_PAGE_BYTES = 1_500_000;

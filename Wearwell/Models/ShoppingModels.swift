@@ -12,6 +12,7 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var excludedColors: [String] = []
     var excludedMaterials: [String] = []
     var dismissedProductIDs: [String] = []
+    var bundledRetailerVersion: Int? = ShoppingRetailer.currentDefaultsVersion
 
     var retailerDomains: [String] {
         var seen = Set<String>()
@@ -31,8 +32,20 @@ struct ShoppingRetailer: Identifiable, Equatable {
         ShoppingRetailer(name: "Uniqlo", domain: "uniqlo.com"),
         ShoppingRetailer(name: "Hollister", domain: "hollisterco.com"),
         ShoppingRetailer(name: "Canton Collective", domain: "cantoncollective.com"),
-        ShoppingRetailer(name: "Codibook", domain: "codibook.net")
+        ShoppingRetailer(name: "Codibook", domain: "codibook.net"),
+        ShoppingRetailer(name: "COS", domain: "cos.com"),
+        ShoppingRetailer(name: "OAK + FORT", domain: "oakandfort.com")
     ]
+    static let currentDefaultsVersion = 2
+
+    static func applyBundledUpdates(to profile: inout ShoppingProfileDTO) -> Bool {
+        guard (profile.bundledRetailerVersion ?? 1) < currentDefaultsVersion else { return false }
+        for domain in ["cos.com", "oakandfort.com"] where !profile.preferredRetailers.contains(domain) {
+            profile.preferredRetailers.append(domain)
+        }
+        profile.bundledRetailerVersion = currentDefaultsVersion
+        return true
+    }
 
     static func normalizedDomain(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

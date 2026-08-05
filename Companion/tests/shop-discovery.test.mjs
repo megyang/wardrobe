@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isPrivateAddress, normalizeDomain, parseProductHTML } from "../shop-discovery.mjs";
+import { BUNDLED_RETAILERS, isPrivateAddress, normalizeDomain, parseProductHTML } from "../shop-discovery.mjs";
+
+test("bundled retailers include the complementary minimal and Korean-fashion sources", () => {
+  assert.deepEqual(BUNDLED_RETAILERS.map(item => item.domain), [
+    "aritzia.com", "uniqlo.com", "hollisterco.com", "cantoncollective.com",
+    "codibook.net", "cos.com", "oakandfort.com"
+  ]);
+});
 
 test("retailer domains normalize without accepting arbitrary URL schemes or IPs", () => {
   assert.equal(normalizeDomain("https://www.aritzia.com/us/en"), "aritzia.com");

@@ -52,7 +52,8 @@ for AI actions.
 
 Shop discovery also runs on the paired Mac using its ChatGPT-backed Codex login.
 It searches only the retailer domains selected in the local shopping profile,
-starting with Aritzia, Uniqlo, Hollister, Canton Collective, and Codibook. The
+starting with Aritzia, Uniqlo, Hollister, Canton Collective, Codibook, COS, and
+OAK + FORT. The
 search turn runs in an isolated temporary directory with live web access. The
 companion then independently validates public HTTPS destinations, bounded
 responses, product metadata, canonical URLs, images, and retailer-supplied

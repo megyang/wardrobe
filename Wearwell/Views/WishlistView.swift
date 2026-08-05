@@ -230,7 +230,14 @@ struct WishlistView: View {
     }
 
     @MainActor private func ensureShoppingProfile() -> ShoppingProfile {
-        if let shoppingProfile { return shoppingProfile }
+        if let shoppingProfile {
+            var preferences = shoppingProfile.preferences
+            if ShoppingRetailer.applyBundledUpdates(to: &preferences) {
+                shoppingProfile.preferences = preferences
+                try? context.save()
+            }
+            return shoppingProfile
+        }
         let profile = ShoppingProfile()
         context.insert(profile)
         try? context.save()

@@ -32,6 +32,16 @@ final class ShopTests: XCTestCase {
         XCTAssertNil(ShoppingRetailer.normalizedDomain("http://example.com"))
         XCTAssertNil(ShoppingRetailer.normalizedDomain("https://user@example.com"))
         XCTAssertNil(ShoppingRetailer.normalizedDomain("127.0.0.1"))
+        XCTAssertEqual(Array(ShoppingRetailer.bundled.map(\.domain).suffix(2)), ["cos.com", "oakandfort.com"])
+    }
+
+    func testExistingShoppingProfilesReceiveNewRetailerDefaultsOnce() throws {
+        let oldJSON = #"{"country":"US","currency":"USD","sizes":{},"budgets":{},"preferredRetailers":["aritzia.com"],"customRetailerDomains":[],"excludedCategories":[],"excludedColors":[],"excludedMaterials":[],"dismissedProductIDs":[]}"#.data(using: .utf8)!
+        var profile = try JSONDecoder().decode(ShoppingProfileDTO.self, from: oldJSON)
+        XCTAssertTrue(ShoppingRetailer.applyBundledUpdates(to: &profile))
+        XCTAssertTrue(profile.preferredRetailers.contains("cos.com"))
+        XCTAssertTrue(profile.preferredRetailers.contains("oakandfort.com"))
+        XCTAssertFalse(ShoppingRetailer.applyBundledUpdates(to: &profile))
     }
 
     func testMarkdownRequiresTwoRetailerPrices() {
