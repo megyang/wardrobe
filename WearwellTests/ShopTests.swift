@@ -124,6 +124,15 @@ final class ShopTests: XCTestCase {
         XCTAssertFalse(feed.isUnread)
     }
 
+    func testInspirationFeedRemembersItsSourcePhoto() {
+        let inspirationID = UUID()
+        let feed = ShopFeedSnapshot(
+            query: "Find similar tops", originContext: "inspiration:\(inspirationID.uuidString)"
+        )
+        XCTAssertTrue(feed.isInspirationSpecific)
+        XCTAssertEqual(feed.inspirationID, inspirationID)
+    }
+
     func testOldCachedProductDecodesWithoutVisualProvenance() throws {
         let json = #"{"id":"old","canonicalURL":"https://example.com/p","retailer":"Example","domain":"example.com","title":"Top","imageURL":"https://example.com/p.jpg","category":"tops","colors":[],"currentPrice":40,"originalPrice":null,"currency":"USD","verifiedAt":"2026-08-05T12:00:00Z","confidence":0.8,"rationale":"Useful","matchedWardrobeGap":"layer"}"#.data(using: .utf8)!
         let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)

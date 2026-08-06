@@ -116,6 +116,28 @@ export function inspirationRequestedRole(query) {
   return null;
 }
 
+export function focusedInspirationSearchBrief(examples, focusIDs, requestedRole = null) {
+  const focused = new Set((focusIDs || []).map(String));
+  const matches = (examples || []).filter(item => focused.has(String(item?.id)));
+  const values = (key, limit) => [...new Set(matches.flatMap(item => item?.[key] || [])
+    .map(String).map(value => value.trim()).filter(Boolean))].slice(0, limit);
+  const parts = [
+    requestedRole ? `${requestedRole} only` : "individual garments visible in the outfit",
+    ...values("outfitFormula", 3), ...values("silhouettes", 4), ...values("palette", 4),
+    ...values("details", 5), ...values("proportions", 3), ...values("layering", 2)
+  ];
+  return [...new Set(parts)].join(", ").slice(0, 420);
+}
+
+export function passesFocusedInspirationMatch(selection, focusIDs) {
+  const focused = new Set((focusIDs || []).map(String));
+  const matched = (selection?.matchedInspirationIDs || []).map(String);
+  return matched.some(id => focused.has(id)) &&
+    Number(selection?.confidence) >= 0.72 && Number(selection?.tasteFit) >= 0.76 &&
+    Number(selection?.silhouetteFit) >= 0.72 && Number(selection?.colorFit) >= 0.68 &&
+    Number(selection?.constructionFit) >= 0.60;
+}
+
 export function focusedOutfitRoleState(wardrobe, focusGarmentIDs) {
   const focus = new Set((focusGarmentIDs || []).map(String));
   const occupied = new Set(

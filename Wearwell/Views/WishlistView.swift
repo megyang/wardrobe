@@ -66,6 +66,12 @@ struct WishlistView: View {
         let ids = Set(focusInspirationIDs)
         return inspirations.first { ids.contains($0.id) }
     }
+    private var inspirationSearchLabel: String {
+        let value = initialQuery.lowercased()
+        if value.contains("tops only") { return "Tops from this photo" }
+        if value.contains("bottoms only") { return "Bottoms from this photo" }
+        return "Pieces from this whole look"
+    }
     private var relevantFeeds: [ShopFeedSnapshot] {
         if shopOnly {
             return feedSnapshots.filter { $0.isOutfitSpecific && $0.query == initialQuery }
@@ -152,22 +158,30 @@ struct WishlistView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Find something for me").font(.title3.bold())
-                                Text("Searches only stores in your shopping profile.").font(.caption).foregroundStyle(.secondary)
+                                Text(isInspirationShop ? "Match this photo" : "Find something for me").font(.title3.bold())
+                                Text(isInspirationShop ? "Only strong visual matches will be shown." : "Searches only stores in your shopping profile.").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button { showShoppingPreferences = true } label: { Image(systemName: "slider.horizontal.3") }
                                 .accessibilityLabel("Shopping preferences")
                         }
-                        TextField("e.g. a sheer layering top under $70", text: $shopQuery, axis: .vertical)
-                            .lineLimit(1...3)
-                            .submitLabel(.search)
-                            .onSubmit { Task { await startShopSearch() } }
-                            .padding(12)
-                            .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                        if isInspirationShop {
+                            Label(inspirationSearchLabel, systemImage: "viewfinder")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                                .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                        } else {
+                            TextField("e.g. a sheer layering top under $70", text: $shopQuery, axis: .vertical)
+                                .lineLimit(1...3)
+                                .submitLabel(.search)
+                                .onSubmit { Task { await startShopSearch() } }
+                                .padding(12)
+                                .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                        }
                         HStack {
                             Button { Task { await startShopSearch() } } label: {
-                                Label(shopWorking ? "Searching…" : "Search stores", systemImage: "magnifyingglass")
+                                Label(shopWorking ? "Searching…" : (isInspirationShop ? "Search this photo" : "Search stores"), systemImage: "magnifyingglass")
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(shopWorking || companion.status != .available || shoppingProfile == nil)
@@ -192,7 +206,7 @@ struct WishlistView: View {
 
                     if let feed = displayedFeed {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(feed.query.isEmpty ? "Personalized picks" : feed.query).font(.title2.bold()).lineLimit(2)
+                            Text(isInspirationShop ? inspirationSearchLabel : (feed.query.isEmpty ? "Personalized picks" : feed.query)).font(.title2.bold()).lineLimit(2)
                             Spacer()
                             Text(feed.generatedAt, style: .relative).font(.caption).foregroundStyle(.secondary)
                         }
@@ -248,10 +262,8 @@ struct WishlistView: View {
             if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: true) }
         }
         .task {
-            if !isFocusedShop {
-                for feed in relevantFeeds where feed.isUnread { feed.isUnread = false }
-                try? context.save()
-            }
+            for feed in relevantFeeds where feed.isUnread { feed.isUnread = false }
+            try? context.save()
             let profile = ensureShoppingProfile()
             guard !didAutoRefresh else { return }
             didAutoRefresh = true
@@ -351,9 +363,11 @@ struct WishlistView: View {
 
     private func startShopSearch(forcePersonalized: Bool = false, profileOverride: ShoppingProfile? = nil) async {
         guard activeFeed == nil, let shoppingProfile = profileOverride ?? shoppingProfile, companion.status == .available else { return }
-        let query = forcePersonalized || shopQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Personalized pieces that add value to my wardrobe, prioritizing useful verified markdowns"
-            : shopQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = isFocusedShop
+            ? initialQuery
+            : (forcePersonalized || shopQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Personalized pieces that add value to my wardrobe, prioritizing useful verified markdowns"
+                : shopQuery.trimmingCharacters(in: .whitespacesAndNewlines))
         shopWorking = true; shopError = nil
         let snapshot = ShopFeedSnapshot(
             query: query, originContext: searchOrigin,

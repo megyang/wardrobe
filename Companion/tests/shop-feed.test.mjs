@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendFocusedComplements, appendRetailerDiverseProducts, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, deduplicateShopProducts, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendFocusedComplements, appendRetailerDiverseProducts, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -102,4 +102,22 @@ test("inspiration shopping recognizes explicit top and bottom searches", () => {
   assert.equal(inspirationRequestedRole("Find purchasable tops visually similar to this photo. Return tops only."), "tops");
   assert.equal(inspirationRequestedRole("Find purchasable bottoms visually similar to this photo. Return bottoms only."), "bottoms");
   assert.equal(inspirationRequestedRole("Find the strongest pieces from the whole look"), null);
+});
+
+test("focused inspiration retrieval uses only the selected photo's visual traits", () => {
+  const brief = focusedInspirationSearchBrief([
+    { id: "chosen", silhouettes: ["cropped fitted cardigan"], palette: ["cherry red"], details: ["pearl buttons"], outfitFormula: ["cardigan with capris"], proportions: ["short over long"], layering: [] },
+    { id: "other", silhouettes: ["oversized hoodie"], palette: ["gray"], details: [], outfitFormula: [], proportions: [], layering: [] }
+  ], ["chosen"], "tops");
+  assert.match(brief, /cropped fitted cardigan/);
+  assert.match(brief, /cherry red/);
+  assert.doesNotMatch(brief, /oversized hoodie/);
+});
+
+test("focused inspiration products must match the exact photo in silhouette and color", () => {
+  const strong = { confidence: 0.9, tasteFit: 0.88, silhouetteFit: 0.84, colorFit: 0.79, constructionFit: 0.72, matchedInspirationIDs: ["chosen"] };
+  assert.equal(passesFocusedInspirationMatch(strong, ["chosen"]), true);
+  assert.equal(passesFocusedInspirationMatch({ ...strong, silhouetteFit: 0.5 }, ["chosen"]), false);
+  assert.equal(passesFocusedInspirationMatch({ ...strong, colorFit: 0.4 }, ["chosen"]), false);
+  assert.equal(passesFocusedInspirationMatch({ ...strong, matchedInspirationIDs: ["other"] }, ["chosen"]), false);
 });

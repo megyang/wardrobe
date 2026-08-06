@@ -23,7 +23,7 @@ import { BUNDLED_RETAILERS, UCP_RETAILERS, fetchProductImage, normalizeDomain } 
 import { createLiveWebShopProvider } from "./shop-provider.mjs";
 import { createUCPShopProvider } from "./ucp-provider.mjs";
 import { buildGlobalCatalogQueries, createShopifyGlobalCatalogProvider } from "./shopify-global-provider.mjs";
-import { appendFocusedComplements, appendRetailerDiverseProducts, canCompleteFocusedOutfit, deduplicateShopProducts, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
+import { appendFocusedComplements, appendRetailerDiverseProducts, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -381,7 +381,7 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex, 
 
   if (body.preferences?.globalCatalogEnabled !== false) {
     const queries = buildGlobalCatalogQueries({
-      query, preferences: body.preferences, styleProfile: body.styleProfile,
+      query, preferences: body.preferences, styleProfile: (body.focusInspirationIDs || []).length ? null : body.styleProfile,
       inspirationExamples: body.inspirationExamples
     });
     let globalStates = queries.map(value => ({ query: value, cursor: null, page: 0 }));
@@ -521,14 +521,16 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       type: "object", additionalProperties: false, required: ["selections"], properties: {
         selections: { type: "array", minItems: 1, maxItems: wave.length, items: {
           type: "object", additionalProperties: false,
-          required: ["id", "rationale", "matchedWardrobeGap", "confidence", "matchedInspirationIDs", "compatibleGarmentIDs", "visualNotes", "tasteFit", "wardrobeFit", "duplicationRisk"],
+          required: ["id", "rationale", "matchedWardrobeGap", "confidence", "matchedInspirationIDs", "compatibleGarmentIDs", "visualNotes", "tasteFit", "wardrobeFit", "duplicationRisk", "silhouetteFit", "colorFit", "constructionFit", "matchedPiece"],
           properties: {
             id: { type: "string", enum: ids }, rationale: { type: "string" }, matchedWardrobeGap: { type: "string" },
             confidence: { type: "number", minimum: 0, maximum: 1 },
             matchedInspirationIDs: { type: "array", maxItems: 4, items: { type: "string" } },
             compatibleGarmentIDs: { type: "array", maxItems: 8, items: { type: "string" } },
             visualNotes: { type: "string" }, tasteFit: { type: "number", minimum: 0, maximum: 1 },
-            wardrobeFit: { type: "number", minimum: 0, maximum: 1 }, duplicationRisk: { type: "number", minimum: 0, maximum: 1 }
+            wardrobeFit: { type: "number", minimum: 0, maximum: 1 }, duplicationRisk: { type: "number", minimum: 0, maximum: 1 },
+            silhouetteFit: { type: "number", minimum: 0, maximum: 1 }, colorFit: { type: "number", minimum: 0, maximum: 1 },
+            constructionFit: { type: "number", minimum: 0, maximum: 1 }, matchedPiece: { type: "string" }
           }
         }}
       }
@@ -547,7 +549,7 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       focused
         ? `The user's saved wardrobe categories are authoritative and must override any visual or label-based guess. Exact occupied roles: ${JSON.stringify([...roleState.occupied])}. ${roleState.missingFoundation ? `The outfit is missing its foundation role: ${roleState.missingFoundation}; include the strongest one.` : "Its top/bottom foundation is already represented."} HARD REJECTION: do not select any product whose actual role is already occupied, including tops. Do not recommend a replacement top when a top exists. Prefer unoccupied inspiration-supported additions such as accessories, hats, belts, bags, tights, socks, leg warmers, or outer layers. Never reinterpret an item saved as tops as a dress, even if it is long or described as a dress top.`
         : inspirationFocused
-          ? "Match the requested garment type and the exact inspiration image's silhouette, proportions, construction, palette, texture, and visible details. Reject generic approximations."
+          ? "First identify one specific visible garment in the exact inspiration photo that the product is meant to match. Compare that pair directly. Score silhouetteFit for cut, length, volume, neckline or rise, and proportion; colorFit for the actual dominant color and print; and constructionFit for material behavior, texture, trim, closures, and details. Reject generic approximations, category-only matches, and products that match a different aesthetic but not a pictured garment. Do not inflate scores to fill the requested result count."
           : "Use saved wardrobe categories as authoritative inventory metadata.",
       "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. Keep the rationale candid and specific; visualNotes should briefly record the decisive visible evidence.",
       `Request: ${query}. Preferences: ${JSON.stringify(body.preferences || {})}.`,
@@ -565,6 +567,7 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       const minimumWardrobeFit = inspirationFocused ? 0.25 : (focused ? 0.62 : 0.52);
       const maximumDuplication = focused ? 0.36 : 0.48;
       if (selection.tasteFit < minimumTaste || selection.wardrobeFit < minimumWardrobeFit || selection.duplicationRisk > maximumDuplication) continue;
+      if (inspirationFocused && !passesFocusedInspirationMatch(selection, body.focusInspirationIDs)) continue;
       used.add(item.id);
       products.push({
         ...item, confidence: Math.min(item.confidence, selection.confidence),
@@ -593,7 +596,9 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   } else if (focused) {
     discoveryQuery = `${query}. The outfit already occupies ${JSON.stringify([...roleState.occupied])}. Do not search for or return those clothing roles. Search for visually specific accessories and unoccupied styling layers that make the owned outfit resemble the inspiration images.`;
   } else if (inspirationFocused) {
-    discoveryQuery = `${query}. Use the attached exact inspiration image as the visual source of truth; find products with strong visible resemblance rather than generic keyword matches.`;
+    const requestedRole = inspirationRequestedRole(query);
+    const visualBrief = focusedInspirationSearchBrief(body.inspirationExamples, body.focusInspirationIDs, requestedRole);
+    discoveryQuery = `${shoppingAudienceLabel(body.preferences)} clothing. ${visualBrief}. Find purchasable products that closely match these pictured garment traits.`;
   }
   const globalCatalog = createShopifyGlobalCatalogProvider();
   const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex, globalCatalog);

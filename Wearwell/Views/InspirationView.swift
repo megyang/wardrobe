@@ -10,6 +10,7 @@ struct InspirationView: View {
     @Environment(\.modelContext) private var context
     @Query(sort: \InspirationLook.createdAt, order: .reverse) private var looks: [InspirationLook]
     @Query private var profiles: [StyleProfile]
+    @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var shoppingFeeds: [ShopFeedSnapshot]
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var importing = false
     @State private var error: String?
@@ -126,7 +127,7 @@ struct InspirationView: View {
             NavigationStack {
                 WishlistView(
                     showSettings: $showSettings, showActivity: $showActivity, activityCount: activityCount,
-                    initialQuery: request.query, autoSearch: true,
+                    initialQuery: request.query, autoSearch: request.autoSearch,
                     focusInspirationIDs: [request.lookID]
                 )
                 .toolbar {
@@ -158,6 +159,15 @@ struct InspirationView: View {
                 }.buttonStyle(.plain).accessibilityLabel(look.isFavorite ? "Remove favorite emphasis" : "Emphasize this look")
             }
             if look.state == "ready" {
+                if let feed = shoppingFeed(for: look) {
+                    Button { reopen(feed, for: look) } label: {
+                        Label(shoppingResultTitle(feed), systemImage: shoppingResultIcon(feed))
+                            .font(.caption.weight(.semibold)).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(feed.state == "failed" ? WearwellTheme.coral : WearwellTheme.sage)
+                    .accessibilityHint("Shows recommendations matched to this inspiration photo")
+                }
                 Menu {
                     Button("Whole look", systemImage: "square.grid.2x2") { shop(look, target: .wholeLook) }
                     Button("Similar tops", systemImage: "tshirt") { shop(look, target: .tops) }
@@ -198,6 +208,27 @@ struct InspirationView: View {
 
     private func shop(_ look: InspirationLook, target: InspirationShopTarget) {
         shopRequest = InspirationShopRequest(lookID: look.id, target: target)
+    }
+
+    private func shoppingFeed(for look: InspirationLook) -> ShopFeedSnapshot? {
+        shoppingFeeds.first { $0.inspirationID == look.id }
+    }
+
+    private func reopen(_ feed: ShopFeedSnapshot, for look: InspirationLook) {
+        shopRequest = InspirationShopRequest(lookID: look.id, query: feed.query, autoSearch: false)
+    }
+
+    private func shoppingResultTitle(_ feed: ShopFeedSnapshot) -> String {
+        if ["queued", "processing"].contains(feed.state) { return "Shopping in progress · View" }
+        if feed.state == "failed" { return "Shopping search failed · View" }
+        let count = feed.visibleProducts.count
+        return feed.isUnread ? "\(count) shopping results ready" : "View \(count) shopping results"
+    }
+
+    private func shoppingResultIcon(_ feed: ShopFeedSnapshot) -> String {
+        if ["queued", "processing"].contains(feed.state) { return "clock.arrow.circlepath" }
+        if feed.state == "failed" { return "exclamationmark.triangle" }
+        return feed.isUnread ? "bag.badge.plus" : "bag"
     }
 
     private var retryTitle: String {
@@ -315,9 +346,17 @@ private struct InspirationShopRequest: Identifiable {
     let id = UUID()
     let lookID: UUID
     let query: String
+    let autoSearch: Bool
 
     init(lookID: UUID, target: InspirationShopTarget) {
         self.lookID = lookID
         query = target.query
+        autoSearch = true
+    }
+
+    init(lookID: UUID, query: String, autoSearch: Bool) {
+        self.lookID = lookID
+        self.query = query
+        self.autoSearch = autoSearch
     }
 }
