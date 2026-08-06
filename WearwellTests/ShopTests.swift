@@ -22,9 +22,11 @@ final class ShopTests: XCTestCase {
     func testShoppingProfileBackupRoundTripExcludesFeedCache() async throws {
         let source = try makeContainer()
         let shoppingID = UUID()
+        var shoppingPreferences = ShoppingProfileDTO(country: "CA", currency: "CAD", sizes: ["tops": "M"], budgets: ["tops": 120])
+        shoppingPreferences.hiddenRetailerDomains = ["hidden-shop.example"]
         source.mainContext.insert(ShoppingProfile(
             id: shoppingID,
-            preferences: ShoppingProfileDTO(country: "CA", currency: "CAD", sizes: ["tops": "M"], budgets: ["tops": 120])
+            preferences: shoppingPreferences
         ))
         source.mainContext.insert(ShopFeedSnapshot(query: "Disposable cached picks", state: "complete"))
         let needID = UUID()
@@ -42,6 +44,8 @@ final class ShopTests: XCTestCase {
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.currency, "CAD")
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.sizes["tops"], "M")
         XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.selectedAudience, .women)
+        XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.hiddenRetailerDomains, ["hidden-shop.example"])
+        XCTAssertEqual(profiles.first(where: { $0.id == shoppingID })?.preferences.usesGlobalCatalog, true)
         XCTAssertTrue(snapshots.isEmpty, "Shop feeds are disposable cache and must not be restored")
         XCTAssertEqual(needs.first(where: { $0.id == needID })?.title, "Capris")
         XCTAssertEqual(needs.first(where: { $0.id == needID })?.searchQuery, "mid-rise capri pants")
@@ -57,12 +61,18 @@ final class ShopTests: XCTestCase {
         XCTAssertEqual(ShoppingRetailer.web.count, 5)
         XCTAssertEqual(ShoppingRetailer.bundled.count, 25)
         XCTAssertEqual(ShoppingRetailer.ucp.suffix(3).map(\.domain), ["lewkin.com", "thecommense.com", "aelfriceden.com"])
+        var profile = ShoppingProfileDTO()
+        profile.hiddenRetailerDomains = ["oakandfort.com"]
+        XCTAssertFalse(profile.retailerDomains.contains("oakandfort.com"))
+        XCTAssertTrue(profile.usesGlobalCatalog)
     }
 
     func testExistingShoppingProfilesReceiveNewRetailerDefaultsOnce() throws {
         let oldJSON = #"{"country":"US","currency":"USD","sizes":{},"budgets":{},"preferredRetailers":["aritzia.com"],"customRetailerDomains":[],"excludedCategories":[],"excludedColors":[],"excludedMaterials":[],"dismissedProductIDs":[]}"#.data(using: .utf8)!
         var profile = try JSONDecoder().decode(ShoppingProfileDTO.self, from: oldJSON)
         XCTAssertEqual(profile.selectedAudience, .women, "Older profiles safely default to women's recommendations")
+        XCTAssertTrue(profile.usesGlobalCatalog, "Older profiles opt into database-free global discovery")
+        XCTAssertTrue(profile.hiddenRetailerDomains.isEmpty)
         XCTAssertTrue(ShoppingRetailer.applyBundledUpdates(to: &profile))
         XCTAssertTrue(profile.preferredRetailers.contains("aritzia.com"), "Customized existing choices are preserved")
         XCTAssertTrue(profile.preferredRetailers.contains("lewkin.com"))
@@ -119,6 +129,7 @@ final class ShopTests: XCTestCase {
         let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)
         XCTAssertNil(product.source)
         XCTAssertNil(product.visualNotes)
+        XCTAssertNil(product.globalCatalogProductID)
         XCTAssertEqual(product.id, "old")
     }
 

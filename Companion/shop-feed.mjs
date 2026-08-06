@@ -22,6 +22,46 @@ export function appendStableProducts(published, wave, limit = 60) {
   return published;
 }
 
+export function deduplicateShopProducts(products) {
+  const ids = new Set(); const urls = new Set(); const merchantTitles = new Set(); const result = [];
+  for (const item of products) {
+    const id = String(item?.sourceProductID || item?.id || "").toLowerCase();
+    let url = String(item?.canonicalURL || "").toLowerCase();
+    try {
+      const parsed = new URL(url); parsed.hash = "";
+      for (const key of [...parsed.searchParams.keys()]) if (key.startsWith("utm_") || ["_gsid", "ref", "source"].includes(key)) parsed.searchParams.delete(key);
+      url = parsed.href;
+    } catch { /* malformed URLs are rejected by providers */ }
+    const title = String(item?.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const merchantTitle = `${String(item?.domain || "").toLowerCase()}:${title}`;
+    if ((id && ids.has(id)) || (url && urls.has(url)) || (title && merchantTitles.has(merchantTitle))) continue;
+    if (id) ids.add(id); if (url) urls.add(url); if (title) merchantTitles.add(merchantTitle);
+    result.push(item);
+  }
+  return result;
+}
+
+export function appendRetailerDiverseProducts(published, wave, limit = 60, perPage = 2, perFeed = 4) {
+  const ids = new Set(published.map(item => item.id));
+  const feedCounts = new Map(); const pageCounts = new Map();
+  const pageStart = Math.floor(published.length / 12) * 12;
+  for (const [index, item] of published.entries()) {
+    const domain = String(item.domain || "unknown");
+    feedCounts.set(domain, (feedCounts.get(domain) || 0) + 1);
+    if (index >= pageStart) pageCounts.set(domain, (pageCounts.get(domain) || 0) + 1);
+  }
+  for (const item of wave) {
+    if (published.length >= limit) break;
+    const domain = String(item.domain || "unknown");
+    if (ids.has(item.id) || (feedCounts.get(domain) || 0) >= perFeed || (pageCounts.get(domain) || 0) >= perPage) continue;
+    ids.add(item.id); published.push(item);
+    feedCounts.set(domain, (feedCounts.get(domain) || 0) + 1);
+    pageCounts.set(domain, (pageCounts.get(domain) || 0) + 1);
+    if (published.length % 12 === 0) pageCounts.clear();
+  }
+  return published;
+}
+
 export function shouldContinueShopFeed({ publishedCount, candidatesRemaining, lastWaveConfidence }) {
   if (publishedCount >= 60 || candidatesRemaining <= 0) return false;
   if (publishedCount < 40) return true;

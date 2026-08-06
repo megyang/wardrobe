@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendFocusedComplements, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendFocusedComplements, appendRetailerDiverseProducts, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, deduplicateShopProducts, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -15,6 +15,30 @@ test("progressive pages append without reordering, deduplicate, and stop at sixt
   appendStableProducts(published, [{ id: "second" }, ...Array.from({ length: 70 }, (_, index) => ({ id: `new-${index}` }))]);
   assert.deepEqual(published.slice(0, 3).map(item => item.id), ["first", "second", "new-0"]);
   assert.equal(published.length, 60);
+});
+
+test("quality feed caps retailers per page and across the feed without reordering", () => {
+  const published = [];
+  const wave = [
+    ...Array.from({ length: 7 }, (_, index) => ({ id: `a-${index}`, domain: "a.example" })),
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `b-${index}`, domain: "b.example" })),
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `c-${index}`, domain: "c.example" }))
+  ];
+  appendRetailerDiverseProducts(published, retailerDiverse(wave), 60, 2, 4);
+  assert.equal(published.filter(item => item.domain === "a.example").length, 2);
+  assert.ok(Math.max(...["a.example", "b.example", "c.example"].map(domain => published.filter(item => item.domain === domain).length)) <= 2);
+  appendRetailerDiverseProducts(published, retailerDiverse(wave.map(item => ({ ...item, id: `next-${item.id}` }))), 60, 2, 4);
+  assert.ok(published.filter(item => item.domain === "a.example").length <= 4);
+});
+
+test("hybrid candidates deduplicate source IDs, canonical URLs, and merchant titles", () => {
+  const values = deduplicateShopProducts([
+    { id: "direct", sourceProductID: "same", domain: "shop.example", title: "Ribbed Top", canonicalURL: "https://shop.example/p?utm_source=x" },
+    { id: "global-id", sourceProductID: "same", domain: "other.example", title: "Other", canonicalURL: "https://other.example/p" },
+    { id: "tracked", sourceProductID: "three", domain: "shop.example", title: "Different", canonicalURL: "https://shop.example/p" },
+    { id: "same-title", sourceProductID: "four", domain: "shop.example", title: "Ribbed  Top!", canonicalURL: "https://shop.example/other" }
+  ]);
+  assert.deepEqual(values.map(item => item.id), ["direct"]);
 });
 
 test("feed keeps building to forty and stops low-confidence expansion after forty-eight", () => {

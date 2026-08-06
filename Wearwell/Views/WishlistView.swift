@@ -206,6 +206,7 @@ struct WishlistView: View {
                                     test: { Task { await test(product) } },
                                     dismiss: { dismiss(product, from: feed) },
                                     save: { Task { await save(product, from: feed) } },
+                                    hideRetailer: { hideRetailer(product.domain) },
                                     isSaving: savingProductIDs.contains(product.id),
                                     testState: testState(for: product)
                                 )
@@ -428,6 +429,21 @@ struct WishlistView: View {
             if !preferences.dismissedProductIDs.contains(product.id) { preferences.dismissedProductIDs.append(product.id) }
             preferences.dismissedProductIDs = Array(preferences.dismissedProductIDs.suffix(300))
             shoppingProfile.preferences = preferences
+        }
+        try? context.save()
+    }
+
+    private func hideRetailer(_ domain: String) {
+        guard let normalized = ShoppingRetailer.normalizedDomain(domain), let shoppingProfile else { return }
+        var preferences = shoppingProfile.preferences
+        var hidden = preferences.hiddenRetailerDomains
+        if !hidden.contains(normalized) { hidden.append(normalized) }
+        preferences.hiddenRetailerDomains = hidden
+        preferences.preferredRetailers.removeAll { ShoppingRetailer.normalizedDomain($0) == normalized }
+        preferences.customRetailerDomains.removeAll { ShoppingRetailer.normalizedDomain($0) == normalized }
+        shoppingProfile.preferences = preferences
+        for snapshot in feedSnapshots {
+            snapshot.products = snapshot.products.filter { ShoppingRetailer.normalizedDomain($0.domain) != normalized }
         }
         try? context.save()
     }

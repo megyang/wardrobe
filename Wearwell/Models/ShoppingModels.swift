@@ -24,14 +24,28 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var excludedColors: [String] = []
     var excludedMaterials: [String] = []
     var clothingAudience: String? = ShoppingAudience.women.rawValue
+    var globalCatalogEnabled: Bool? = true
+    var excludedRetailerDomains: [String]? = []
     var dismissedProductIDs: [String] = []
     var bundledRetailerVersion: Int? = ShoppingRetailer.currentDefaultsVersion
 
     var retailerDomains: [String] {
         var seen = Set<String>()
+        let excluded = Set(hiddenRetailerDomains)
         return (preferredRetailers + customRetailerDomains)
             .compactMap(ShoppingRetailer.normalizedDomain)
+            .filter { !excluded.contains($0) }
             .filter { seen.insert($0).inserted }
+    }
+
+    var usesGlobalCatalog: Bool {
+        get { globalCatalogEnabled ?? true }
+        set { globalCatalogEnabled = newValue }
+    }
+
+    var hiddenRetailerDomains: [String] {
+        get { (excludedRetailerDomains ?? []).compactMap(ShoppingRetailer.normalizedDomain) }
+        set { excludedRetailerDomains = Array(Set(newValue.compactMap(ShoppingRetailer.normalizedDomain))).sorted() }
     }
 
     var selectedAudience: ShoppingAudience {
@@ -126,6 +140,8 @@ struct DiscoveredProductDTO: Codable, Identifiable, Equatable {
     var matchedInspirationIDs: [String]? = nil
     var compatibleGarmentIDs: [String]? = nil
     var visualNotes: String? = nil
+    var globalCatalogProductID: String? = nil
+    var globalCatalogVariantID: String? = nil
 
     var hasVerifiedMarkdown: Bool {
         guard let currentPrice, let originalPrice else { return false }

@@ -22,7 +22,8 @@ import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
 import { BUNDLED_RETAILERS, UCP_RETAILERS, fetchProductImage, normalizeDomain } from "./shop-discovery.mjs";
 import { createLiveWebShopProvider } from "./shop-provider.mjs";
 import { createUCPShopProvider } from "./ucp-provider.mjs";
-import { appendFocusedComplements, appendStableProducts, canCompleteFocusedOutfit, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
+import { buildGlobalCatalogQueries, createShopifyGlobalCatalogProvider } from "./shopify-global-provider.mjs";
+import { appendFocusedComplements, appendRetailerDiverseProducts, canCompleteFocusedOutfit, deduplicateShopProducts, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -348,7 +349,7 @@ async function mapWithConcurrency(values, limit, operation) {
   return result;
 }
 
-async function collectShopCandidates(body, query, domains, signal, workerIndex) {
+async function collectShopCandidates(body, query, domains, signal, workerIndex, globalCatalog) {
   const ucp = createUCPShopProvider();
   const knownUCP = new Set(UCP_RETAILERS.map(item => item.domain));
   const registry = new Map(BUNDLED_RETAILERS.map(item => [item.domain, item]));
@@ -378,6 +379,31 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex) 
     active = next;
   }
 
+  if (body.preferences?.globalCatalogEnabled !== false) {
+    const queries = buildGlobalCatalogQueries({
+      query, preferences: body.preferences, styleProfile: body.styleProfile,
+      inspirationExamples: body.inspirationExamples
+    });
+    let globalStates = queries.map(value => ({ query: value, cursor: null, page: 0 }));
+    const globalFound = [];
+    while (globalStates.length && globalFound.length < 180) {
+      const pages = await mapWithConcurrency(globalStates, 4, state => globalCatalog.searchCatalog({
+        query: state.query, preferences: body.preferences, cursor: state.cursor, limit: 25, signal
+      }));
+      const next = [];
+      for (let index = 0; index < globalStates.length; index++) {
+        const state = globalStates[index]; const page = pages[index];
+        if (page?.status !== "fulfilled") continue;
+        globalFound.push(...page.value.products);
+        if (state.page < 1 && page.value.hasMore && page.value.cursor && globalFound.length < 180) {
+          next.push({ ...state, cursor: page.value.cursor, page: state.page + 1 });
+        }
+      }
+      globalStates = next;
+    }
+    found.push(...globalFound.slice(0, 180));
+  }
+
   if (webDomains.length) {
     const web = createLiveWebShopProvider({
       search: (prompt, schema, context) => discoveryStructured(prompt, schema, context.signal, context.workerIndex)
@@ -389,9 +415,32 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex) 
     } catch { /* successful UCP catalogs remain usable when web discovery fails */ }
   }
 
-  const byURL = new Map();
-  for (const product of found) if (!byURL.has(product.canonicalURL)) byURL.set(product.canonicalURL, product);
-  return retailerDiverse([...byURL.values()], 60);
+  const excluded = new Set((body.preferences?.excludedRetailerDomains || []).map(normalizeDomain).filter(Boolean));
+  const preferred = new Set(domains);
+  const eligible = found.filter(product => !excluded.has(product.domain)).map(product => ({
+    ...product,
+    isPreferredRetailer: preferred.has(product.domain)
+  }));
+  return retailerDiverse(deduplicateShopProducts(eligible), 120);
+}
+
+async function revalidateGlobalProducts(products, globalCatalog, preferences, signal) {
+  const settled = await mapWithConcurrency(products, 4, async product => {
+    if (product.source !== "ucp-global") return product;
+    const refreshed = await globalCatalog.getProduct({
+      productID: product.globalCatalogProductID || product.sourceProductID,
+      variantID: product.globalCatalogVariantID, preferences, signal
+    });
+    return {
+      ...refreshed,
+      confidence: Math.min(refreshed.confidence, product.confidence),
+      rationale: product.rationale, matchedWardrobeGap: product.matchedWardrobeGap,
+      matchedInspirationIDs: product.matchedInspirationIDs,
+      compatibleGarmentIDs: product.compatibleGarmentIDs,
+      visualNotes: product.visualNotes
+    };
+  });
+  return settled.filter(item => item?.status === "fulfilled").map(item => item.value);
 }
 
 function xml(value) {
@@ -489,6 +538,7 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       `Hard audience constraint: select only ${shoppingAudienceLabel(body.preferences)} clothing. Do not select products for another audience.`,
       "Use the actual attached product pictures together with the labeled inspiration and owned-wardrobe contact sheets. Inspect silhouette, proportions, visible texture, fabric weight, palette, print scale, detail density, and layering role. Text is supporting evidence, not a substitute for looking.",
       "Prioritize demonstrated inspiration fit, compatibility with several exact owned garments, a useful wardrobe gap, versatility, shopping constraints, then markdown. Penalize visual duplicates and pieces that only match generic keywords.",
+      "Use isPreferredRetailer only as a modest tie-breaker after visual and wardrobe fit. Never let a preferred store dominate a page or rescue a weak product.",
       (body.focusGarmentIDs || []).length
         ? `This is an outfit-specific request. Judge each product primarily by how well it completes the exact owned garment IDs ${JSON.stringify(body.focusGarmentIDs)}; return actual products, not general wardrobe-gap advice.`
         : inspirationFocused
@@ -531,7 +581,7 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
 async function discoverShop(body, signal = null, workerIndex = null, onProgress = async () => {}) {
   const requestedDomains = Array.isArray(body.retailerDomains) ? body.retailerDomains : [];
   const domains = [...new Set(requestedDomains.map(normalizeDomain).filter(Boolean))].slice(0, 30);
-  if (!domains.length) domains.push(...UCP_RETAILERS.map(item => item.domain));
+  if (!domains.length && body.preferences?.globalCatalogEnabled === false) domains.push(...UCP_RETAILERS.map(item => item.domain));
   const query = String(body.query || "personalized pieces that add value to my wardrobe").trim().slice(0, 500);
   const resultLimit = Math.min(60, Math.max(2, Number(body.resultLimit) || 60));
   const focused = (body.focusGarmentIDs || []).length > 0;
@@ -545,9 +595,10 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   } else if (inspirationFocused) {
     discoveryQuery = `${query}. Use the attached exact inspiration image as the visual source of truth; find products with strong visible resemblance rather than generic keyword matches.`;
   }
-  const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex);
+  const globalCatalog = createShopifyGlobalCatalogProvider();
+  const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex, globalCatalog);
   if (!candidates.length) throw new Error("No selected store returned verifiable products. Try another request or store.");
-  const generatedAt = new Date().toISOString(); const products = [];
+  const generatedAt = new Date().toISOString(); const products = []; let publishedVisibleCount = 0;
   const evidence = await materializeEvidenceBoards(body);
   try {
     for (let offset = 0; offset < candidates.length && products.length < resultLimit; offset += 12) {
@@ -555,9 +606,14 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
       let ranked;
       try { ranked = await rankShopWave(body, query, wave, products, evidence, signal, workerIndex); }
       catch (error) { if (!products.length) throw error; break; }
+      ranked = await revalidateGlobalProducts(ranked, globalCatalog, body.preferences, signal);
       if (focused) appendFocusedComplements(products, ranked, body.wardrobe, body.focusGarmentIDs, resultLimit);
-      else appendStableProducts(products, ranked, resultLimit);
-      const completed = Math.min(products.length, resultLimit); const result = { query, generatedAt, products: products.slice(0, resultLimit) };
+      else appendRetailerDiverseProducts(products, ranked, resultLimit, 2, 4);
+      const completed = Math.min(products.length, resultLimit);
+      const exhausted = offset + wave.length >= candidates.length;
+      const nextPageTarget = Math.min(resultLimit, publishedVisibleCount + 12);
+      if (completed >= nextPageTarget || completed >= resultLimit || exhausted) publishedVisibleCount = completed;
+      const result = { query, generatedAt, products: products.slice(0, publishedVisibleCount) };
       await onProgress({
         result, stage: completed < Math.min(resultLimit, candidates.length) ? "Visually ranking more products" : "Finalizing recommendations",
         completed, total: Math.min(resultLimit, candidates.length), estimatedSecondsRemaining: Math.max(0, Math.ceil((Math.min(resultLimit, candidates.length) - completed) / 12) * 45)

@@ -28,6 +28,7 @@ struct ShopProductCard: View {
     let test: (() -> Void)?
     let dismiss: () -> Void
     var save: (() -> Void)? = nil
+    var hideRetailer: (() -> Void)? = nil
     var isSaving = false
     var testState: ShopProductTestState = .idle
     @Environment(\.openURL) private var openURL
@@ -58,6 +59,14 @@ struct ShopProductCard: View {
 
             HStack(alignment: .firstTextBaseline) {
                 Text(product.retailer.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(WearwellTheme.sage)
+                if let hideRetailer {
+                    Menu {
+                        Button("Hide this retailer", systemImage: "eye.slash", role: .destructive, action: hideRetailer)
+                    } label: {
+                        Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Retailer options")
+                }
                 Spacer()
                 Text("\(Int((product.confidence * 100).rounded()))% verified").font(.caption2).foregroundStyle(.secondary)
             }
@@ -152,10 +161,17 @@ struct ShoppingPreferencesView: View {
                 Text("Shop searches and ranks clothing for the selected audience. Change this before refreshing or starting a search.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("UCP catalogs") {
+            Section("Catalog discovery") {
+                Toggle("Search across Shopify", isOn: globalCatalogBinding)
+                Text("Uses Shopify's live UCP catalog for variety across merchants. Your wardrobe and inspiration images stay out of retailer requests.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Preferred UCP stores") {
                 ForEach(ShoppingRetailer.ucp) { retailer in
                     Toggle(retailer.name, isOn: retailerBinding(retailer.domain))
                 }
+                Text("Preferred stores are queried directly and boosted, but Shopify-wide results may include other quality-checked retailers.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Web-search stores") {
                 ForEach(ShoppingRetailer.web) { retailer in
@@ -178,8 +194,19 @@ struct ShoppingPreferencesView: View {
                 TextField("Colors, comma separated", text: listBinding(\.excludedColors))
                 TextField("Materials, comma separated", text: listBinding(\.excludedMaterials))
             }
+            if !profile.preferences.hiddenRetailerDomains.isEmpty {
+                Section("Hidden retailers") {
+                    ForEach(profile.preferences.hiddenRetailerDomains, id: \.self) { domain in
+                        HStack {
+                            Text(domain)
+                            Spacer()
+                            Button("Restore") { restoreRetailer(domain) }
+                        }
+                    }
+                }
+            }
             Section {
-                Text("Wearwell checks custom stores for UCP automatically, then falls back to verified web discovery. The bundled UCP integration uses Shopify's public development agent profile and must be replaced before a production release.")
+                Text("Wearwell searches Shopify's live Global Catalog, checks custom stores for direct UCP, then falls back to verified web discovery. The development agent profile must be replaced before a production release.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -223,6 +250,13 @@ struct ShoppingPreferencesView: View {
         )
     }
 
+    private var globalCatalogBinding: Binding<Bool> {
+        Binding(
+            get: { profile.preferences.usesGlobalCatalog },
+            set: { enabled in update { $0.usesGlobalCatalog = enabled } }
+        )
+    }
+
     private func listBinding(_ keyPath: WritableKeyPath<ShoppingProfileDTO, [String]>) -> Binding<String> {
         Binding(get: { profile.preferences[keyPath: keyPath].joined(separator: ", ") }, set: { text in
             update { $0[keyPath: keyPath] = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } }
@@ -236,4 +270,8 @@ struct ShoppingPreferencesView: View {
     }
 
     private func removeDomain(_ domain: String) { update { $0.customRetailerDomains.removeAll { $0 == domain } } }
+
+    private func restoreRetailer(_ domain: String) {
+        update { $0.hiddenRetailerDomains.removeAll { $0 == domain } }
+    }
 }
