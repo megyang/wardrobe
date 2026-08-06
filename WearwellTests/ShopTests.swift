@@ -133,6 +133,25 @@ final class ShopTests: XCTestCase {
         XCTAssertEqual(feed.inspirationID, inspirationID)
     }
 
+    func testSavedRecommendationKeepsInspirationAndOutfitContext() {
+        let inspirationID = UUID()
+        XCTAssertEqual(
+            SavedRecommendationContext.inspirationID(from: "shop:product|inspiration:\(inspirationID.uuidString)"),
+            inspirationID
+        )
+
+        let garmentIDs = [UUID(), UUID()]
+        let feed = ShopFeedSnapshot(
+            query: "Complete this outfit", originContext: "outfit", focusGarmentIDs: garmentIDs
+        )
+        let item = WishlistItem(label: "Scarf", category: .accessories, color: "Red")
+        let source = SavedRecommendationContext.sourceOutfit(for: item, feed: feed, title: "Dinner look")
+        XCTAssertEqual(source?.notes, SavedRecommendationContext.outfitMarker)
+        XCTAssertEqual(source?.wishlistItemID, item.id)
+        XCTAssertEqual(Set(source?.layout.compactMap(\.garmentID) ?? []), Set(garmentIDs))
+        XCTAssertEqual(source?.layout.filter { $0.wishlistItemID == item.id }.count, 1)
+    }
+
     func testOldCachedProductDecodesWithoutVisualProvenance() throws {
         let json = #"{"id":"old","canonicalURL":"https://example.com/p","retailer":"Example","domain":"example.com","title":"Top","imageURL":"https://example.com/p.jpg","category":"tops","colors":[],"currentPrice":40,"originalPrice":null,"currency":"USD","verifiedAt":"2026-08-05T12:00:00Z","confidence":0.8,"rationale":"Useful","matchedWardrobeGap":"layer"}"#.data(using: .utf8)!
         let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)

@@ -19,11 +19,13 @@ struct WishlistView: View {
     @Query(sort: \ShoppingProfile.updatedAt, order: .reverse) private var shoppingProfiles: [ShoppingProfile]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var feedSnapshots: [ShopFeedSnapshot]
     @Query private var savedProducts: [WishlistItem]
+    @Query private var outfits: [Outfit]
     @State private var photo: PhotosPickerItem?
     @State private var url = ""
     @State private var working = false
     @State private var error: String?
     @State private var selectedItem: WishlistItem?
+    @State private var selectedItemAutoAssess = true
     @State private var showResult = false
     @State private var shopQuery = ""
     @State private var shopWorking = false
@@ -72,6 +74,22 @@ struct WishlistView: View {
         if value.contains("bottoms only") { return "Bottoms from this photo" }
         return "Pieces from this whole look"
     }
+    private var focusedSourceOutfit: Outfit? {
+        let ids = Set(focusGarmentIDs)
+        return outfits.first { $0.belongsInOutfitLibrary && Set($0.layout.compactMap(\.garmentID)) == ids }
+    }
+    private var focusedOutfitLayout: [LayoutItem] {
+        if let focusedSourceOutfit { return focusedSourceOutfit.layout }
+        return focusGarmentIDs.enumerated().map { index, id in
+            LayoutItem(
+                garmentID: id,
+                x: index.isMultiple(of: 2) ? 0.28 : 0.72,
+                y: 0.25 + Double(index / 2) * 0.32,
+                scale: 0.7,
+                zIndex: Double(index)
+            )
+        }
+    }
     private var relevantFeeds: [ShopFeedSnapshot] {
         if shopOnly {
             return feedSnapshots.filter { $0.isOutfitSpecific && $0.query == initialQuery }
@@ -88,6 +106,12 @@ struct WishlistView: View {
         if isFocusedShop, activeFeed != nil { return nil }
         return latestFeed
     }
+    private var recommendationFeeds: [ShopFeedSnapshot] {
+        feedSnapshots.filter {
+            $0.originContext != "wardrobe" &&
+            (["queued", "processing", "failed"].contains($0.state) || !$0.visibleProducts.isEmpty)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -99,6 +123,23 @@ struct WishlistView: View {
                         title: shopOnly ? "Pieces to complete the look" : (isInspirationShop ? "Shop similar pieces" : "Shop"),
                         subtitle: shopOnly ? "Luna is matching real products to the clothes already on your collage." : (isInspirationShop ? "Luna compares real product images with the inspiration photo, not just its description." : "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe.")
                     )
+                    if !isFocusedShop, !recommendationFeeds.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Recent Luna results").font(.title3.bold())
+                                Spacer()
+                                Text("Always available here").font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(recommendationFeeds.prefix(6)) { feed in
+                                NavigationLink { recommendationDestination(feed) } label: {
+                                    RecommendationFeedRow(feed: feed, garments: garments, inspirations: inspirations)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(16)
+                        .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+                    }
                     if let focusedInspiration {
                         ZStack(alignment: .bottomLeading) {
                             AssetImage(name: focusedInspiration.assetName, contentMode: .fill)
@@ -109,6 +150,16 @@ struct WishlistView: View {
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                         .accessibilityElement(children: .combine)
+                    }
+                    if shopOnly, !focusedOutfitLayout.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(focusedSourceOutfit.map { "Recommended for \($0.title)" } ?? "Recommended for this outfit")
+                                .font(.headline)
+                            CollagePreview(items: focusedOutfitLayout, garments: garments, candidate: nil)
+                                .aspectRatio(1.15, contentMode: .fit)
+                                .frame(maxWidth: .infinity)
+                                .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                        }
                     }
                     if !isFocusedShop {
                         Picker("Shop mode", selection: $shopMode) {
@@ -217,11 +268,12 @@ struct WishlistView: View {
                             ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }) { product in
                                 ShopProductCard(
                                     product: product,
-                                    test: { Task { await test(product) } },
+                                    test: { Task { await test(product, from: feed) } },
                                     dismiss: { dismiss(product, from: feed) },
                                     save: { Task { await save(product, from: feed) } },
                                     hideRetailer: { hideRetailer(product.domain) },
                                     isSaving: savingProductIDs.contains(product.id),
+                                    isSaved: savedProducts.contains { SavedRecommendationContext.matches($0, product: product) },
                                     testState: testState(for: product)
                                 )
                             }
@@ -245,7 +297,10 @@ struct WishlistView: View {
             if let shoppingProfile { NavigationStack { ShoppingPreferencesView(profile: shoppingProfile) } }
         }
         .alert("Saved", isPresented: Binding(get: { saveNotice != nil }, set: { if !$0 { saveNotice = nil } })) {
-            Button("OK") { saveNotice = nil }
+            if selectedItem != nil {
+                Button("View in Saved") { selectedItemAutoAssess = false; showResult = true; saveNotice = nil }
+            }
+            Button("Keep browsing", role: .cancel) { saveNotice = nil }
         } message: { Text(saveNotice ?? "") }
         .onChange(of: photo) { _, item in
             guard let item else { return }
@@ -259,7 +314,7 @@ struct WishlistView: View {
             }
         }
         .navigationDestination(isPresented: $showResult) {
-            if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: true) }
+            if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: selectedItemAutoAssess) }
         }
         .task {
             for feed in relevantFeeds where feed.isUnread { feed.isUnread = false }
@@ -279,6 +334,15 @@ struct WishlistView: View {
                 try? await Task.sleep(for: .seconds(activeFeed == nil ? 15 : 3))
             }
         }
+    }
+
+    @ViewBuilder private func recommendationDestination(_ feed: ShopFeedSnapshot) -> some View {
+        WishlistView(
+            showSettings: $showSettings, showActivity: $showActivity, activityCount: activityCount,
+            initialQuery: feed.query, autoSearch: false,
+            shopOnly: feed.isOutfitSpecific, focusGarmentIDs: feed.focusGarmentIDs,
+            focusInspirationIDs: feed.inspirationID.map { [$0] } ?? []
+        )
     }
 
     private var canImportURL: Bool {
@@ -339,6 +403,7 @@ struct WishlistView: View {
             context.insert(item)
             try context.save()
             selectedItem = item
+            selectedItemAutoAssess = true
             showResult = true
         } catch {
             self.error = error.localizedDescription
@@ -464,7 +529,8 @@ struct WishlistView: View {
 
     @MainActor private func save(_ product: DiscoveredProductDTO, from feed: ShopFeedSnapshot) async {
         guard !savingProductIDs.contains(product.id) else { return }
-        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+        if let existing = savedProducts.first(where: { SavedRecommendationContext.matches($0, product: product) }) {
+            selectedItem = existing
             dismiss(product, from: feed)
             saveNotice = "This product was already in Saved."
             return
@@ -472,53 +538,45 @@ struct WishlistView: View {
         savingProductIDs.insert(product.id)
         defer { savingProductIDs.remove(product.id) }
         do {
-            let data = try await ImportService.image(from: product.imageURL).0
-            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
-            let category = GarmentCategory(rawValue: product.category) ?? .tops
-            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
-            context.insert(WishlistItem(
-                label: product.title, category: category, color: product.colors.first ?? "",
-                details: "Saved from \(product.retailer). \(price).", sourceAssetName: assetName,
-                catalogAssetName: assetName, sourceURL: product.canonicalURL, fingerprint: "shop:\(product.id)"
-            ))
+            let item = try await SavedRecommendationContext.makeItem(product: product, feed: feed)
+            context.insert(item)
+            if let source = SavedRecommendationContext.sourceOutfit(for: item, feed: feed, title: sourceOutfitTitle(for: feed)) {
+                context.insert(source)
+            }
             dismiss(product, from: feed)
             try context.save()
-            saveNotice = "Saved under Saved products."
+            selectedItem = item
+            selectedItemAutoAssess = false
+            saveNotice = feed.isOutfitSpecific ? "Saved with its original outfit under Saved products." : "Saved under Saved products."
         } catch { saveNotice = "This product couldn't be saved: \(error.localizedDescription)" }
     }
 
     private func testState(for product: DiscoveredProductDTO) -> ShopProductTestState {
         if testingProductIDs.contains(product.id) { return .queueing }
-        if let item = savedProducts.first(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+        if let item = savedProducts.first(where: { SavedRecommendationContext.matches($0, product: product) }) {
             return item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } == true ? .queued : .saved
         }
         return .idle
     }
 
-    @MainActor private func test(_ product: DiscoveredProductDTO) async {
+    @MainActor private func test(_ product: DiscoveredProductDTO, from feed: ShopFeedSnapshot) async {
         guard !testingProductIDs.contains(product.id) else { return }
         guard companion.isPaired else {
             shopError = "Pair the Mac companion before queueing a wardrobe test."
             return
         }
-        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) { return }
+        if savedProducts.contains(where: { SavedRecommendationContext.matches($0, product: product) }) { return }
         testingProductIDs.insert(product.id)
         shopError = nil
         var item: WishlistItem?
         do {
-            let data = try await ImportService.image(from: product.imageURL).0
-            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
-            let category = GarmentCategory(rawValue: product.category) ?? .tops
-            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
-            let candidate = WishlistItem(
-                label: product.title, category: category, color: product.colors.first ?? "",
-                details: "Testing from \(product.retailer). \(price). \(product.rationale)",
-                sourceAssetName: assetName, catalogAssetName: assetName,
-                sourceURL: product.canonicalURL, fingerprint: "shop:\(product.id)"
-            )
+            let candidate = try await SavedRecommendationContext.makeItem(product: product, feed: feed)
             candidate.assessmentState = "submitting"
             candidate.assessmentStage = "Queueing wardrobe test"
             context.insert(candidate)
+            if let source = SavedRecommendationContext.sourceOutfit(for: candidate, feed: feed, title: sourceOutfitTitle(for: feed)) {
+                context.insert(source)
+            }
             try context.save()
             item = candidate
 
@@ -538,6 +596,13 @@ struct WishlistView: View {
         }
         testingProductIDs.remove(product.id)
     }
+
+    private func sourceOutfitTitle(for feed: ShopFeedSnapshot) -> String? {
+        let focus = Set(feed.focusGarmentIDs)
+        return outfits.first {
+            $0.belongsInOutfitLibrary && Set($0.layout.compactMap(\.garmentID)) == focus
+        }?.title
+    }
 }
 
 struct SavedItemsView: View {
@@ -551,6 +616,7 @@ struct SavedItemsView: View {
     @Query private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
     @Query private var inspirations: [InspirationLook]
+    @Query private var outfits: [Outfit]
     @State private var newNeed = ""
     @State private var recommending = false
     @State private var error: String?
@@ -605,8 +671,30 @@ struct SavedItemsView: View {
                         EmptyState(icon: "heart", title: "No saved products", message: "Save a recommendation in Shop or check a product you're considering.")
                             .frame(minHeight: 180)
                     } else {
-                        ForEach(candidates) { item in
-                            NavigationLink { WishlistDetailView(item: item) } label: { WishlistRow(item: item) }.buttonStyle(.plain)
+                        ForEach(inspirations) { look in
+                            let related = candidates.filter { SavedRecommendationContext.inspirationID(from: $0.fingerprint) == look.id }
+                            if !related.isEmpty {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ZStack(alignment: .bottomLeading) {
+                                        AssetImage(name: look.assetName, contentMode: .fill)
+                                            .frame(height: 145).frame(maxWidth: .infinity).clipped()
+                                        Text("Saved from this inspiration")
+                                            .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                                            .padding(8).background(.black.opacity(0.58), in: Capsule()).padding(10)
+                                    }
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                                    ForEach(related) { item in
+                                        NavigationLink { WishlistDetailView(item: item) } label: {
+                                            WishlistRow(item: item, sourceLabel: "From this inspiration")
+                                        }.buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                        ForEach(candidates.filter { SavedRecommendationContext.inspirationID(from: $0.fingerprint) == nil }) { item in
+                            NavigationLink { WishlistDetailView(item: item) } label: {
+                                WishlistRow(item: item, sourceLabel: sourceOutfit(for: item) == nil ? nil : "Saved with an outfit")
+                            }.buttonStyle(.plain)
                         }
                     }
                     }
@@ -617,6 +705,9 @@ struct SavedItemsView: View {
     }
 
     private var trimmedNeed: String { newNeed.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func sourceOutfit(for item: WishlistItem) -> Outfit? {
+        outfits.first { $0.wishlistItemID == item.id && $0.notes == SavedRecommendationContext.outfitMarker }
+    }
     private func addNeed() {
         let value = trimmedNeed
         guard !value.isEmpty, !activeNeeds.contains(where: { $0.title.localizedCaseInsensitiveCompare(value) == .orderedSame }) else { return }
@@ -672,6 +763,65 @@ private extension ShopFeedSnapshot {
     }
 }
 
+private struct RecommendationFeedRow: View {
+    let feed: ShopFeedSnapshot
+    let garments: [Garment]
+    let inspirations: [InspirationLook]
+
+    private var sourceInspiration: InspirationLook? {
+        guard let id = feed.inspirationID else { return nil }
+        return inspirations.first { $0.id == id }
+    }
+
+    private var focusedGarments: [Garment] {
+        let ids = Set(feed.focusGarmentIDs)
+        return garments.filter { ids.contains($0.id) }
+    }
+
+    private var title: String {
+        if feed.isOutfitSpecific { return "Products for an outfit" }
+        if feed.isInspirationSpecific { return "Products from inspiration" }
+        return "Shopping recommendations"
+    }
+
+    private var status: String {
+        if ["queued", "processing"].contains(feed.state) { return feed.progressStage ?? "Luna is still working" }
+        if feed.state == "failed" { return feed.errorMessage ?? "Search needs attention" }
+        return "\(feed.visibleProducts.count) result\(feed.visibleProducts.count == 1 ? "" : "s")"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let sourceInspiration {
+                    AssetImage(name: sourceInspiration.assetName, contentMode: .fill)
+                } else if let garment = focusedGarments.first {
+                    CollageAssetImage(name: garment.catalogAssetName.isEmpty ? garment.sourceAssetName : garment.catalogAssetName)
+                        .padding(5)
+                } else {
+                    Image(systemName: "bag").foregroundStyle(WearwellTheme.sage)
+                }
+            }
+            .frame(width: 58, height: 68)
+            .background(WearwellTheme.previewSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(title).font(.subheadline.weight(.semibold))
+                    if feed.isUnread { Circle().fill(WearwellTheme.coral).frame(width: 7, height: 7) }
+                }
+                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            if ["queued", "processing"].contains(feed.state) { ProgressView() }
+            else { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ShopProcessingStatus: View {
     let stage: String
     let estimatedSeconds: Int?
@@ -704,11 +854,12 @@ private struct ShopProcessingStatus: View {
 
 private struct WishlistRow: View {
     let item: WishlistItem
+    var sourceLabel: String? = nil
     private var assessmentIsActive: Bool {
         item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } ?? false
     }
     var body: some View {
-        HStack(spacing: 15) { CollageAssetImage(name: item.catalogAssetName).padding(6).frame(width: 92, height: 110).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(item.label).font(.headline); Text("\(item.color) · \(item.subcategory?.title ?? item.category.title)").font(.caption).foregroundStyle(.secondary); if assessmentIsActive { StatusPill(text: "CREATING OUTFITS", color: WearwellTheme.sage) } else if let verdict = item.verdict { StatusPill(text: verdict.rawValue.uppercased(), color: verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral) } }; Spacer(); Image(systemName: "chevron.right") }.padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+        HStack(spacing: 15) { CollageAssetImage(name: item.catalogAssetName).padding(6).frame(width: 92, height: 110).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 5) { Text(item.label).font(.headline); Text("\(item.color) · \(item.subcategory?.title ?? item.category.title)").font(.caption).foregroundStyle(.secondary); if let sourceLabel { Label(sourceLabel, systemImage: "link").font(.caption2.weight(.semibold)).foregroundStyle(WearwellTheme.sage) }; if assessmentIsActive { StatusPill(text: "CREATING OUTFITS", color: WearwellTheme.sage) } else if let verdict = item.verdict { StatusPill(text: verdict.rawValue.uppercased(), color: verdict == .buy ? WearwellTheme.sage : WearwellTheme.coral) } else { Text("Tap to generate outfits").font(.caption2).foregroundStyle(.secondary) } }; Spacer(); Image(systemName: "chevron.right") }.padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -766,14 +917,41 @@ struct WishlistDetailView: View {
     @State private var confirmDelete = false
     @AppStorage("savedOutfitViewMode") private var outfitViewMode = "gallery"
     private var assessmentIsActive: Bool { item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } ?? false }
-    private var savedPurchaseOutfits: [Outfit] { outfits.filter { $0.wishlistItemID == item.id && $0.origin == .purchaseTest } }
+    private var savedPurchaseOutfits: [Outfit] {
+        outfits.filter { $0.wishlistItemID == item.id && $0.origin == .purchaseTest && $0.notes != SavedRecommendationContext.outfitMarker }
+    }
+    private var sourceContextOutfit: Outfit? {
+        outfits.first { $0.wishlistItemID == item.id && $0.notes == SavedRecommendationContext.outfitMarker }
+    }
+    private var sourceInspiration: InspirationLook? {
+        guard let id = SavedRecommendationContext.inspirationID(from: item.fingerprint) else { return nil }
+        return inspirations.first { $0.id == id }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 CollageAssetImage(name: item.catalogAssetName).padding(18).frame(height: 330).frame(maxWidth: .infinity).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 20))
                 EditorialHeader(eyebrow: "Wishlist", title: item.label, subtitle: "\(item.color) · \(item.subcategory?.title ?? item.category.title)")
+                if let sourceInspiration {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recommended from this inspiration").font(.headline)
+                        AssetImage(name: sourceInspiration.assetName, contentMode: .fill)
+                            .frame(height: 190).frame(maxWidth: .infinity).clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+                if let sourceContextOutfit {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Saved with this outfit").font(.headline)
+                        Text("Luna originally recommended the product for this exact combination.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        CollagePreview(items: sourceContextOutfit.layout, garments: garments, candidate: item)
+                            .aspectRatio(0.85, contentMode: .fit)
+                            .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                    }
+                }
                 Text(item.details).foregroundStyle(.secondary)
-                Button { Task { await assess() } } label: { HStack { Spacer(); if working { ProgressView() } else { Label(assessmentIsActive ? "Outfits queued" : "Create 3–5 outfits + verdict", systemImage: "sparkles") }; Spacer() } }.buttonStyle(.borderedProminent).disabled(garments.count < 2 || companion.status != .available || working || assessmentIsActive)
+                Button { Task { await assess() } } label: { HStack { Spacer(); if working { ProgressView() } else { Label(assessmentIsActive ? "Generating outfits…" : "Generate outfits with this item", systemImage: "sparkles") }; Spacer() } }.buttonStyle(.borderedProminent).disabled(garments.count < 2 || companion.status != .available || working || assessmentIsActive)
                 if working || assessmentIsActive {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.assessmentStage ?? "Queued — safe to lock").font(.caption.weight(.semibold))
@@ -807,7 +985,18 @@ struct WishlistDetailView: View {
                 try? await Task.sleep(for: .seconds(3))
             }
         }
-        .confirmationDialog("Delete this candidate?", isPresented: $confirmDelete) { Button("Delete", role: .destructive) { Task { await AssetStore.shared.remove(named: item.sourceAssetName); await AssetStore.shared.remove(named: item.catalogAssetName) }; context.delete(item); try? context.save(); dismiss() } }
+        .confirmationDialog("Delete this candidate?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await AssetStore.shared.remove(named: item.sourceAssetName)
+                    await AssetStore.shared.remove(named: item.catalogAssetName)
+                }
+                for outfit in outfits where outfit.wishlistItemID == item.id { context.delete(outfit) }
+                context.delete(item)
+                try? context.save()
+                dismiss()
+            }
+        }
     }
     private func verdictView(_ value: PurchaseAssessmentDTO) -> some View {
         VStack(alignment: .leading, spacing: 12) {

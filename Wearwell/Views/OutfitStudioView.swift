@@ -190,7 +190,8 @@ private struct OutfitProductResultsView: View {
                         test: nil,
                         dismiss: { delete(product) },
                         save: { Task { await save(product) } },
-                        isSaving: savingProductIDs.contains(product.id)
+                        isSaving: savingProductIDs.contains(product.id),
+                        isSaved: savedProducts.contains { SavedRecommendationContext.matches($0, product: product) }
                     )
                 }
                 Button(role: .destructive) { showDeleteConfirmation = true } label: {
@@ -222,7 +223,7 @@ private struct OutfitProductResultsView: View {
 
     @MainActor private func save(_ product: DiscoveredProductDTO) async {
         guard !savingProductIDs.contains(product.id) else { return }
-        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+        if savedProducts.contains(where: { SavedRecommendationContext.matches($0, product: product) }) {
             removeFromStudio(product)
             notice = "This product was already in Saved, so it was removed from Studio."
             return
@@ -230,24 +231,14 @@ private struct OutfitProductResultsView: View {
         savingProductIDs.insert(product.id)
         defer { savingProductIDs.remove(product.id) }
         do {
-            let data = try await ImportService.image(from: product.imageURL).0
-            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
-            let category = GarmentCategory(rawValue: product.category) ?? .tops
-            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
-            let item = WishlistItem(
-                label: product.title,
-                category: category,
-                color: product.colors.first ?? "",
-                details: "Saved from \(product.retailer). \(price).",
-                sourceAssetName: assetName,
-                catalogAssetName: assetName,
-                sourceURL: product.canonicalURL,
-                fingerprint: "shop:\(product.id)"
-            )
+            let item = try await SavedRecommendationContext.makeItem(product: product, feed: feed)
             context.insert(item)
+            if let source = SavedRecommendationContext.sourceOutfit(for: item, feed: feed, title: sourceOutfit?.title) {
+                context.insert(source)
+            }
             removeFromStudio(product, saveContext: false)
             try context.save()
-            notice = "Saved to Saved for later."
+            notice = "Saved with its original outfit under Saved products."
         } catch {
             notice = "This product couldn't be saved: \(error.localizedDescription)"
         }

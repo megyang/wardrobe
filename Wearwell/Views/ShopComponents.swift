@@ -1,6 +1,58 @@
 import SwiftData
 import SwiftUI
 
+enum SavedRecommendationContext {
+    static let outfitMarker = "wearwell:recommendation-source-outfit"
+
+    static func matches(_ item: WishlistItem, product: DiscoveredProductDTO) -> Bool {
+        item.sourceURL == product.canonicalURL || item.fingerprint.split(separator: "|").first.map(String.init) == "shop:\(product.id)"
+    }
+
+    static func inspirationID(from fingerprint: String) -> UUID? {
+        fingerprint.split(separator: "|").compactMap { component -> UUID? in
+            let value = String(component)
+            guard value.hasPrefix("inspiration:") else { return nil }
+            return UUID(uuidString: String(value.dropFirst("inspiration:".count)))
+        }.first
+    }
+
+    @MainActor static func makeItem(product: DiscoveredProductDTO, feed: ShopFeedSnapshot) async throws -> WishlistItem {
+        let data = try await ImportService.image(from: product.imageURL).0
+        let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
+        let category = GarmentCategory(rawValue: product.category) ?? .tops
+        let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
+        let source = feed.inspirationID.map { "|inspiration:\($0.uuidString)" } ?? ""
+        return WishlistItem(
+            label: product.title, category: category, color: product.colors.first ?? "",
+            details: "Saved from \(product.retailer). \(price).",
+            sourceAssetName: assetName, catalogAssetName: assetName,
+            sourceURL: product.canonicalURL, fingerprint: "shop:\(product.id)\(source)"
+        )
+    }
+
+    static func sourceOutfit(for item: WishlistItem, feed: ShopFeedSnapshot, title: String?) -> Outfit? {
+        guard feed.isOutfitSpecific, !feed.focusGarmentIDs.isEmpty else { return nil }
+        var layout = [LayoutItem(wishlistItemID: item.id, x: 0.5, y: 0.17, scale: 0.78, zIndex: 0)]
+        for (index, id) in feed.focusGarmentIDs.enumerated() {
+            layout.append(LayoutItem(
+                garmentID: id,
+                x: index.isMultiple(of: 2) ? 0.27 : 0.73,
+                y: 0.48 + Double(index / 2) * 0.25,
+                scale: 0.62,
+                zIndex: Double(index + 1)
+            ))
+        }
+        return Outfit(
+            title: title.map { "Recommended for \($0)" } ?? "Original recommendation outfit",
+            notes: outfitMarker,
+            rationale: "The outfit Luna originally recommended this product for.",
+            origin: .purchaseTest,
+            layout: layout,
+            wishlistItemID: item.id
+        )
+    }
+}
+
 enum ShopProductTestState: Equatable {
     case idle, queueing, queued, saved
 
@@ -30,6 +82,7 @@ struct ShopProductCard: View {
     var save: (() -> Void)? = nil
     var hideRetailer: (() -> Void)? = nil
     var isSaving = false
+    var isSaved = false
     var testState: ShopProductTestState = .idle
     @Environment(\.openURL) private var openURL
 
@@ -77,13 +130,13 @@ struct ShopProductCard: View {
                 if let save {
                     Button(action: save) {
                         HStack(spacing: 5) {
-                            if isSaving { ProgressView() } else { Image(systemName: "heart") }
-                            Text(isSaving ? "Saving…" : "Save")
+                            if isSaving { ProgressView() } else { Image(systemName: isSaved ? "heart.fill" : "heart") }
+                            Text(isSaving ? "Saving…" : (isSaved ? "Saved" : "Save"))
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(isSaving)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSaving || isSaved)
                 }
                 if let test {
                     Button(action: test) {
@@ -94,7 +147,7 @@ struct ShopProductCard: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .disabled(testState != .idle)
                 }
                 Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: {
