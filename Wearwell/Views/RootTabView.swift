@@ -150,7 +150,13 @@ struct RootTabView: View {
                 generation.state = job.state; generation.stage = job.stage
                 generation.estimatedSecondsRemaining = job.estimatedSecondsRemaining
                 generation.errorMessage = job.error; generation.updatedAt = .now
-                if let result = job.result { generation.suggestions = OutfitValidator.validateAI(result.outfits, garments: garments) }
+                if let result = job.result {
+                    let existing = outfits.filter(\.belongsInOutfitLibrary).map { $0.layout.compactMap(\.garmentID) }
+                        + styleGenerations.filter { $0.id != generation.id && $0.state == "complete" }.flatMap { $0.suggestions.map(\.garmentIDs) }
+                    generation.suggestions = OutfitValidator.validateAI(
+                        result.outfits, garments: garments, existingCombinations: existing
+                    )
+                }
                 if !wasComplete, job.state == "complete" { generation.isUnread = true }
                 changed = true
             } catch { /* leave the durable job pending while temporarily unreachable */ }

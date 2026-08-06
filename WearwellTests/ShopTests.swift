@@ -3,6 +3,21 @@ import XCTest
 @testable import Wearwell
 
 final class ShopTests: XCTestCase {
+    func testExhaustedOutfitProductFeedLeavesStudioResults() {
+        let product = DiscoveredProductDTO(
+            id: "one", canonicalURL: "https://example.com/scarf", retailer: "Example", domain: "example.com",
+            title: "Scarf", imageURL: "https://example.com/scarf.jpg", category: "accessories", colors: [],
+            currentPrice: 30, originalPrice: nil, currency: "USD", verifiedAt: "2026-08-05T12:00:00Z",
+            confidence: 0.9, rationale: "Completes the look", matchedWardrobeGap: "accessory"
+        )
+        let feed = ShopFeedSnapshot(query: "Complete this outfit", products: [product], state: "complete", originContext: "outfit")
+        XCTAssertTrue(feed.belongsInStudioResults)
+
+        feed.dismissedIDs = [product.id]
+
+        XCTAssertFalse(feed.belongsInStudioResults)
+    }
+
     @MainActor
     func testShoppingProfileBackupRoundTripExcludesFeedCache() async throws {
         let source = try makeContainer()

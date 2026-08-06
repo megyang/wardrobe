@@ -732,10 +732,21 @@ enum AlphaBoundsCropper {
 }
 
 enum OutfitValidator {
-    static func validateAI(_ suggestions: [OutfitSuggestionDTO], garments: [Garment], anchorID: UUID? = nil) -> [OutfitSuggestionDTO] {
-        return suggestions.filter { suggestion in
-            isValid(suggestion, garments: garments) && (anchorID.map { suggestion.garmentIDs.contains($0) } ?? true)
+    static func validateAI(
+        _ suggestions: [OutfitSuggestionDTO], garments: [Garment], anchorID: UUID? = nil,
+        existingCombinations: [[UUID]] = []
+    ) -> [OutfitSuggestionDTO] {
+        var represented = existingCombinations.map { similarityKey(for: $0, garments: garments) }
+        var accepted: [OutfitSuggestionDTO] = []
+        for suggestion in suggestions {
+            guard isValid(suggestion, garments: garments),
+                  anchorID.map({ suggestion.garmentIDs.contains($0) }) ?? true else { continue }
+            let key = similarityKey(for: suggestion.garmentIDs, garments: garments)
+            guard !represented.contains(key) else { continue }
+            represented.append(key)
+            accepted.append(suggestion)
         }
+        return accepted
     }
 
     static func validatePurchase(_ assessment: PurchaseAssessmentDTO, garments: [Garment], candidate: WishlistItem) -> PurchaseAssessmentDTO {
@@ -746,6 +757,18 @@ enum OutfitValidator {
     private struct Piece {
         var id: String
         var category: GarmentCategory
+    }
+
+    /// Shoes and accessories should not make an otherwise repeated outfit feel new.
+    /// Tops, bottoms, and dresses form the core; if an unusual suggestion has no
+    /// core piece, fall back to comparing its complete garment combination.
+    private static func similarityKey(for garmentIDs: [UUID], garments: [Garment]) -> Set<UUID> {
+        let categories = Dictionary(uniqueKeysWithValues: garments.map { ($0.id, $0.category) })
+        let core = Set(garmentIDs.filter { id in
+            guard let category = categories[id] else { return false }
+            return [.tops, .bottoms, .dresses].contains(category)
+        })
+        return core.isEmpty ? Set(garmentIDs) : core
     }
 
     private static func isValid(_ suggestion: OutfitSuggestionDTO, garments: [Garment], candidate: WishlistItem? = nil) -> Bool {

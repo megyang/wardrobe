@@ -290,6 +290,23 @@ final class WearwellTests: XCTestCase {
         XCTAssertTrue(OutfitValidator.validateAI([duplicate], garments: [top]).isEmpty)
     }
 
+    func testAIValidationRejectsSameCoreOutfitWithDifferentShoes() {
+        let top = Garment(label: "Top", category: .tops, color: "Blue")
+        let firstBottom = Garment(label: "Pants", category: .bottoms, color: "Black")
+        let secondBottom = Garment(label: "Skirt", category: .bottoms, color: "Gray")
+        let sneakers = Garment(label: "Sneakers", category: .shoes, color: "White")
+        let boots = Garment(label: "Boots", category: .shoes, color: "Black")
+        let repeatedCore = OutfitSuggestionDTO(title: "Same outfit, boots", rationale: "", garmentIDs: [top.id, firstBottom.id, boots.id])
+        let newCore = OutfitSuggestionDTO(title: "Different bottom", rationale: "", garmentIDs: [top.id, secondBottom.id, boots.id])
+
+        let result = OutfitValidator.validateAI(
+            [repeatedCore, newCore], garments: [top, firstBottom, secondBottom, sneakers, boots],
+            existingCombinations: [[top.id, firstBottom.id, sneakers.id]]
+        )
+
+        XCTAssertEqual(result.map(\.title), ["Different bottom"])
+    }
+
     func testOutfitFindsGarmentInSavedLayout() {
         let garmentID = UUID()
         let outfit = Outfit(title: "Saved", origin: .manual, layout: [LayoutItem(garmentID: garmentID)])

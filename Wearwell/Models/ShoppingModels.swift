@@ -237,6 +237,10 @@ struct WardrobeGapResponseDTO: Codable, Equatable {
     }
 
     var isOutfitSpecific: Bool { originContext == "outfit" }
+    var visibleProducts: [DiscoveredProductDTO] { products.filter { !dismissedIDs.contains($0.id) } }
+    var belongsInStudioResults: Bool {
+        isOutfitSpecific && (["queued", "processing"].contains(state) || (state == "complete" && !visibleProducts.isEmpty))
+    }
 
     init(
         id: UUID = UUID(), query: String, products: [DiscoveredProductDTO] = [],

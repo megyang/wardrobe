@@ -14,7 +14,7 @@ struct OutfitStudioView: View {
     @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
     @State private var studioSection = "outfits"
     private var savedOutfits: [Outfit] { outfits.filter(\.belongsInOutfitLibrary) }
-    private var outfitProductFeeds: [ShopFeedSnapshot] { productFeeds.filter(\.isOutfitSpecific) }
+    private var outfitProductFeeds: [ShopFeedSnapshot] { productFeeds.filter(\.belongsInStudioResults) }
 
     var body: some View {
         ZStack {
@@ -77,7 +77,8 @@ struct OutfitStudioView: View {
                                             VStack(alignment: .leading, spacing: 3) {
                                                 Text("Products for this outfit").font(.headline)
                                                 Text(focusLabel(for: feed)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                                Text("\(feed.products.count) focused recommendation\(feed.products.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                                                let remaining = feed.visibleProducts.count
+                                                Text("\(remaining) focused recommendation\(remaining == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
                                             }
                                             Spacer()
                                             if feed.isUnread { unreadDot }
@@ -124,7 +125,11 @@ struct OutfitStudioView: View {
                     }
                 }.padding()
             }
-        }.toolbar { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
+        }
+        .onChange(of: outfitProductFeeds.isEmpty) { _, isEmpty in
+            if isEmpty, studioSection == "results" { studioSection = "outfits" }
+        }
+        .toolbar { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
     }
 
     private var unreadDot: some View {
@@ -149,9 +154,21 @@ private struct OutfitProductResultsView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismissView
     @Query private var garments: [Garment]
+    @Query private var outfits: [Outfit]
     @Query private var savedProducts: [WishlistItem]
     @State private var savingProductIDs: Set<String> = []
     @State private var notice: String?
+    @State private var showDeleteConfirmation = false
+
+    private var focusGarments: [Garment] {
+        let lookup = Dictionary(uniqueKeysWithValues: garments.map { ($0.id, $0) })
+        return feed.focusGarmentIDs.compactMap { lookup[$0] }
+    }
+
+    private var sourceOutfit: Outfit? {
+        let focus = Set(feed.focusGarmentIDs)
+        return outfits.first { $0.belongsInOutfitLibrary && Set($0.layout.compactMap(\.garmentID)) == focus }
+    }
 
     private var focusLabel: String {
         let ids = Set(feed.focusGarmentIDs)
@@ -166,6 +183,7 @@ private struct OutfitProductResultsView: View {
                     eyebrow: "For this exact outfit", title: "Luna's product picks",
                     subtitle: "Selected specifically for \(focusLabel), to fill missing roles rather than repeat what is already there."
                 )
+                RecommendationOutfitContext(title: sourceOutfit?.title, garments: focusGarments)
                 ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }.prefix(6)) { product in
                     ShopProductCard(
                         product: product,
@@ -175,6 +193,11 @@ private struct OutfitProductResultsView: View {
                         isSaving: savingProductIDs.contains(product.id)
                     )
                 }
+                Button(role: .destructive) { showDeleteConfirmation = true } label: {
+                    Label("Delete these recommendations", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }.padding()
         }
         .background(WearwellTheme.cream.ignoresSafeArea())
@@ -182,6 +205,15 @@ private struct OutfitProductResultsView: View {
         .alert("Saved products", isPresented: Binding(
             get: { notice != nil }, set: { if !$0 { notice = nil } }
         )) { Button("OK") { notice = nil } } message: { Text(notice ?? "") }
+        .confirmationDialog(
+            "Delete all products for this outfit?", isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete recommendations", role: .destructive) { deleteFeed() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes this result from Studio. Products already moved to Saved will stay there.")
+        }
     }
 
     private func delete(_ product: DiscoveredProductDTO) {
@@ -231,6 +263,42 @@ private struct OutfitProductResultsView: View {
             context.delete(feed)
         }
         if saveContext { try? context.save() }
+    }
+
+    private func deleteFeed() {
+        dismissView()
+        context.delete(feed)
+        try? context.save()
+    }
+}
+
+private struct RecommendationOutfitContext: View {
+    let title: String?
+    let garments: [Garment]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.map { "Recommended for \($0)" } ?? "Recommended for this outfit")
+                .font(.headline)
+            if garments.isEmpty {
+                Text("The original collage is no longer available.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(garments) { garment in
+                            VStack(spacing: 6) {
+                                AssetImage(name: garment.catalogAssetName.isEmpty ? garment.sourceAssetName : garment.catalogAssetName)
+                                    .scaledToFit().frame(width: 78, height: 88)
+                                Text(garment.label).font(.caption2).lineLimit(1).frame(width: 82)
+                            }
+                            .padding(8).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -438,7 +506,12 @@ struct AIStyleView: View {
         generation.errorMessage = job.error
         generation.updatedAt = .now
         if let result = job.result {
-            let valid = OutfitValidator.validateAI(result.outfits, garments: garments)
+            let existing = savedLibraryOutfits.filter(\.belongsInOutfitLibrary).map { $0.layout.compactMap(\.garmentID) }
+                + generations.filter { $0.id != generation.id && $0.state == "complete" }.flatMap { $0.suggestions.map(\.garmentIDs) }
+            let valid = OutfitValidator.validateAI(
+                result.outfits, garments: garments, anchorID: anchorID,
+                existingCombinations: existing
+            )
             generation.suggestions = valid
             suggestions = valid
             if valid.isEmpty { error = "Luna couldn't create a valid outfit from the current wardrobe." }

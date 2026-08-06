@@ -11,6 +11,7 @@ import { catalogEditPrompt, catalogPrompt } from "./prompts.mjs";
 import { SUBCATEGORIES, SUBCATEGORY_VALUES, normalizeSubcategory } from "./category-taxonomy.mjs";
 import { JOB_TTL_MS, PROCESSING_TIMEOUT_MS, isAnalysisJobOverdue } from "./job-lifecycle.mjs";
 import { hasValidOutfitComposition } from "./outfit-rules.mjs";
+import { outfitSimilarityKey, representedOutfitKeys } from "./outfit-similarity.mjs";
 import { SerialQueue } from "./serial-queue.mjs";
 import { withAbortTimeout } from "./timeout.mjs";
 import { PriorityQueue } from "./priority-queue.mjs";
@@ -676,6 +677,7 @@ async function style(body, signal = null, workerIndex = null) {
     "Candidate balance: at least five candidates must be clean foundational looks with only 2 or 3 pieces and no torso layering. At most three candidates may use two torso pieces. Do not put the same statement tights, leggings, hat, scarf, or other accessory into most candidates merely because it resembles a recurring inspiration detail.",
     "Allow only one visually assertive print, graphic, lace motif, or novelty focal point per candidate unless one specific attached inspiration clearly demonstrates the same kind of print interaction. Similar aesthetic labels are not enough evidence for pattern mixing.",
     "The recent-outfit list is repetition history, not evidence that those combinations were liked. Actively explore compatible pieces with lower recent-use counts. When the anchor is a top, spread candidates across the viable bottoms instead of repeatedly defaulting to the same skirt or denim mini.",
+    "Do not recreate the same core outfit with different shoes or accessories. A candidate needs a meaningfully different top, bottom, dress, or intentional torso layer from every recent or saved outfit and from the other candidates.",
     "Outfit feedback is direct personal taste evidence. Reuse principles from loved outfits when relevant. Never recreate an exact disliked combination, and treat its reason as targeted evidence: for example, Wrong bottom criticizes that bottom relationship rather than every garment in the outfit. Unrated and merely recent outfits are neutral.",
     "Saved wardrobe outfits are strong positive evidence because the user intentionally kept them. Learn their garment relationships, complexity, proportions, and recurring formulas; translate those principles instead of simply copying the same combination. Edit pairs show how the user corrected Luna: prefer the final set and layout, learn substitutions from added and removed IDs, and do not assume every original piece was individually disliked.",
     "Composition rule: allow at most two tops, one bottom, and one dress, and never more than two torso pieces. Dresses may be styled with one bottom. Outerwear, shoes, tights, and other accessories do not consume torso slots.",
@@ -693,12 +695,18 @@ async function style(body, signal = null, workerIndex = null) {
   try { value = await structured(prompt, generationVisuals.files, outfitSchema(ids, 10, 12), signal, workerIndex); }
   finally { await fs.rm(generationVisuals.folder, { recursive: true, force: true }); }
   const seenCombinations = new Set();
+  const representedCoreOutfits = representedOutfitKeys([...recentOutfits, ...savedOutfits], body.wardrobe);
   const candidates = value.outfits.filter(item => {
     const key = item.garmentIDs.map(id => String(id).toLowerCase()).sort().join("|");
+    const similarityKey = outfitSimilarityKey(item.garmentIDs, body.wardrobe);
     const valid = hasValidOutfitComposition(item.garmentIDs, body.wardrobe, null, item.layering) &&
       new Set(item.garmentIDs).size === item.garmentIDs.length &&
-      (!body.anchorID || item.garmentIDs.includes(body.anchorID)) && !seenCombinations.has(key) && !dislikedCombinationKeys.has(key);
-    if (valid) seenCombinations.add(key);
+      (!body.anchorID || item.garmentIDs.includes(body.anchorID)) && !seenCombinations.has(key) &&
+      !representedCoreOutfits.has(similarityKey) && !dislikedCombinationKeys.has(key);
+    if (valid) {
+      seenCombinations.add(key);
+      representedCoreOutfits.add(similarityKey);
+    }
     return valid;
   }).map(item => ({ ...item, candidateID: randomUUID() }));
   if (candidates.length < 3) throw new Error("Fewer than three valid outfit combinations were generated. Please try again.");
