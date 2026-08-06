@@ -481,6 +481,9 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       `Hard audience constraint: select only ${shoppingAudienceLabel(body.preferences)} clothing. Do not select products for another audience.`,
       "Use the actual attached product pictures together with the labeled inspiration and owned-wardrobe contact sheets. Inspect silhouette, proportions, visible texture, fabric weight, palette, print scale, detail density, and layering role. Text is supporting evidence, not a substitute for looking.",
       "Prioritize demonstrated inspiration fit, compatibility with several exact owned garments, a useful wardrobe gap, versatility, shopping constraints, then markdown. Penalize visual duplicates and pieces that only match generic keywords.",
+      (body.focusGarmentIDs || []).length
+        ? `This is an outfit-specific request. Judge each product primarily by how well it completes the exact owned garment IDs ${JSON.stringify(body.focusGarmentIDs)}; return actual products, not general wardrobe-gap advice.`
+        : "This is a wardrobe-level product search; prefer pieces that work across several owned garments.",
       "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. Keep the rationale candid and specific; visualNotes should briefly record the decisive visible evidence.",
       `Request: ${query}. Preferences: ${JSON.stringify(body.preferences || {})}.`,
       `Style profile: ${JSON.stringify(body.styleProfile || null)}. Inspiration analyses: ${JSON.stringify(body.inspirationExamples || [])}.`,
@@ -515,27 +518,28 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   const domains = [...new Set(requestedDomains.map(normalizeDomain).filter(Boolean))].slice(0, 30);
   if (!domains.length) domains.push(...UCP_RETAILERS.map(item => item.domain));
   const query = String(body.query || "personalized pieces that add value to my wardrobe").trim().slice(0, 500);
+  const resultLimit = Math.min(60, Math.max(2, Number(body.resultLimit) || 60));
   const candidates = await collectShopCandidates(body, query, domains, signal, workerIndex);
   if (!candidates.length) throw new Error("No selected store returned verifiable products. Try another request or store.");
   const generatedAt = new Date().toISOString(); const products = [];
   const evidence = await materializeEvidenceBoards(body);
   try {
-    for (let offset = 0; offset < candidates.length && products.length < 60; offset += 12) {
+    for (let offset = 0; offset < candidates.length && products.length < resultLimit; offset += 12) {
       const wave = candidates.slice(offset, offset + 12);
       let ranked;
       try { ranked = await rankShopWave(body, query, wave, products, evidence, signal, workerIndex); }
       catch (error) { if (!products.length) throw error; break; }
-      appendStableProducts(products, ranked, 60);
-      const completed = Math.min(products.length, 60); const result = { query, generatedAt, products: products.slice(0, 60) };
+      appendStableProducts(products, ranked, resultLimit);
+      const completed = Math.min(products.length, resultLimit); const result = { query, generatedAt, products: products.slice(0, resultLimit) };
       await onProgress({
-        result, stage: completed < Math.min(60, candidates.length) ? "Visually ranking more products" : "Finalizing recommendations",
-        completed, total: Math.min(60, candidates.length), estimatedSecondsRemaining: Math.max(0, Math.ceil((Math.min(60, candidates.length) - completed) / 12) * 45)
+        result, stage: completed < Math.min(resultLimit, candidates.length) ? "Visually ranking more products" : "Finalizing recommendations",
+        completed, total: Math.min(resultLimit, candidates.length), estimatedSecondsRemaining: Math.max(0, Math.ceil((Math.min(resultLimit, candidates.length) - completed) / 12) * 45)
       });
       const average = ranked.reduce((sum, item) => sum + item.confidence, 0) / Math.max(1, ranked.length);
-      if (!shouldContinueShopFeed({ publishedCount: completed, candidatesRemaining: candidates.length - offset - wave.length, lastWaveConfidence: average })) break;
+      if (completed >= resultLimit || !shouldContinueShopFeed({ publishedCount: completed, candidatesRemaining: candidates.length - offset - wave.length, lastWaveConfidence: average })) break;
     }
     if (!products.length) throw new Error("The verified products could not be visually ranked.");
-    return { query, generatedAt, products: products.slice(0, 60) };
+    return { query, generatedAt, products: products.slice(0, resultLimit) };
   } finally { await fs.rm(evidence.folder, { recursive: true, force: true }); }
 }
 

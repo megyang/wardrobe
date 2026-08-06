@@ -26,13 +26,7 @@ struct ShopProductCard: View {
             }
             Text(product.title).font(.headline)
             price
-            Text(product.rationale).font(.subheadline)
-            if let visualNotes = product.visualNotes, !visualNotes.isEmpty {
-                Text(visualNotes).font(.caption).foregroundStyle(.secondary)
-            }
-            if !product.matchedWardrobeGap.isEmpty {
-                Label(product.matchedWardrobeGap, systemImage: "hanger").font(.caption).foregroundStyle(.secondary)
-            }
+            if !product.rationale.isEmpty { Text(product.rationale).font(.subheadline).foregroundStyle(.secondary) }
             HStack {
                 Button("Test with my wardrobe", action: test).buttonStyle(.borderedProminent)
                 Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: { Image(systemName: "safari") }
@@ -41,8 +35,6 @@ struct ShopProductCard: View {
                 Button(role: .destructive, action: dismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless).accessibilityLabel("Dismiss recommendation")
             }
-            Text("\((product.source ?? "web").uppercased()) · Verified \(verifiedDateText) · Price and availability can change at the retailer.")
-                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(16)
         .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
@@ -62,10 +54,6 @@ struct ShopProductCard: View {
         }
     }
 
-    private var verifiedDateText: String {
-        guard let date = ISO8601DateFormatter().date(from: product.verifiedAt) else { return "recently" }
-        return date.formatted(date: .abbreviated, time: .shortened)
-    }
 }
 
 struct ShoppingPreferencesView: View {

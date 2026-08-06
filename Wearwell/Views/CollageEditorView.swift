@@ -10,9 +10,6 @@ struct CollageEditorView: View {
     let wishlistItem: WishlistItem?
 
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
-    @Query private var styleProfiles: [StyleProfile]
-    @Query private var inspirations: [InspirationLook]
-    @Query(sort: \PurchaseNeed.createdAt, order: .reverse) private var purchaseNeeds: [PurchaseNeed]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -31,6 +28,8 @@ struct CollageEditorView: View {
     @State private var recommendationCategory: GarmentCategory?
     @State private var recommending = false
     @State private var recommendationNotice: String?
+    @State private var showShopRecommendations = false
+    @State private var outfitShopQuery = ""
 
     init(origin: OutfitOrigin = .manual, title: String = "New outfit", rationale: String = "", items: [LayoutItem] = [], wishlistItem: WishlistItem? = nil) {
         existingOutfit = nil
@@ -86,6 +85,16 @@ struct CollageEditorView: View {
         }
         .sheet(isPresented: $showPicker) { garmentPicker }
         .sheet(isPresented: $showRecommendationPicker) { recommendationPicker }
+        .sheet(isPresented: $showShopRecommendations) {
+            NavigationStack {
+                WishlistView(
+                    showSettings: .constant(false), initialQuery: outfitShopQuery, autoSearch: true,
+                    shopOnly: true, focusGarmentIDs: Array(Set(items.compactMap(\.garmentID)))
+                )
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showShopRecommendations = false } } }
+            }
+            .keyboardDismissToolbar()
+        }
         .alert("Luna", isPresented: Binding(
             get: { recommendationNotice != nil },
             set: { if !$0 { recommendationNotice = nil } }
@@ -282,7 +291,19 @@ struct CollageEditorView: View {
     }
     private func requestPurchaseRecommendations() {
         showRecommendationPicker = false
-        Task { await recommendGaps() }
+        guard companion.isPaired else {
+            recommendationNotice = "Pair with the Mac companion in Settings before asking Luna."
+            return
+        }
+        let selectedIDs = Set(items.compactMap(\.garmentID))
+        let selected = garments.filter { selectedIDs.contains($0.id) }
+        guard !selected.isEmpty else {
+            recommendationNotice = "Add at least one wardrobe piece before asking Luna what to buy for this outfit."
+            return
+        }
+        let description = selected.map { "\($0.color) \($0.label) (\($0.subcategory?.title ?? $0.category.title))" }.joined(separator: ", ")
+        outfitShopQuery = "Find 2–6 specific products to complete this exact outfit: \(description). Prioritize the missing role, proportion, layer, shoe, or accessory that makes these pictured pieces work together."
+        showShopRecommendations = true
     }
     private func recommend(category: GarmentCategory?, subcategory: GarmentSubcategory?) async {
         guard companion.isPaired else {
@@ -310,36 +331,6 @@ struct CollageEditorView: View {
             additions.forEach { add($0) }
             selectedID = items.last?.id
             recommendationNotice = "Added \(additions.map(\.label).joined(separator: " + ")). \(result.rationale)"
-        } catch {
-            recommendationNotice = error.localizedDescription
-        }
-    }
-    private func recommendGaps() async {
-        guard companion.isPaired else {
-            recommendationNotice = "Pair with the Mac companion in Settings before asking Luna."
-            return
-        }
-        recommending = true
-        defer { recommending = false }
-        do {
-            let gaps = try await companion.recommendWardrobeGaps(
-                garments: garments, selectedGarmentIDs: [],
-                existingNeeds: purchaseNeeds, styleProfile: styleProfiles.first, inspirations: inspirations
-            )
-            let existing = Set(purchaseNeeds.filter { !$0.isCompleted }.map { $0.title.lowercased() })
-            let fresh = gaps.filter { !existing.contains($0.title.lowercased()) }
-            for gap in fresh {
-                context.insert(PurchaseNeed(
-                    title: gap.title,
-                    category: GarmentCategory(rawValue: gap.category),
-                    subcategory: gap.subcategory == "none" ? nil : GarmentSubcategory(rawValue: gap.subcategory),
-                    rationale: gap.rationale, searchQuery: gap.searchQuery, isLunaSuggested: true
-                ))
-            }
-            try context.save()
-            recommendationNotice = fresh.isEmpty
-                ? "Your current On the lookout list already covers Luna's suggestions."
-                : "Saved to On the lookout: \(fresh.map(\.title).joined(separator: ", "))."
         } catch {
             recommendationNotice = error.localizedDescription
         }

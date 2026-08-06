@@ -381,7 +381,9 @@ final class CompanionClient: ObservableObject {
         garments: [Garment],
         styleProfile: StyleProfile?,
         inspirations: [InspirationLook],
-        shoppingProfile: ShoppingProfileDTO
+        shoppingProfile: ShoppingProfileDTO,
+        focusGarmentIDs: [UUID] = [],
+        resultLimit: Int = 60
     ) async throws -> ShopDiscoveryJobDTO {
         status = .busy
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue shop discovery")
@@ -397,6 +399,8 @@ final class CompanionClient: ObservableObject {
             styleProfile: styleProfile?.profile,
             wardrobe: garments.map(GarmentSummary.init),
             inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
+            focusGarmentIDs: focusGarmentIDs,
+            resultLimit: resultLimit,
             garmentVisuals: await visualReferences(garments.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
             }, byteBudget: 10 * 1024 * 1024),
@@ -725,6 +729,8 @@ private struct ShopDiscoveryRequest: Codable {
     let styleProfile: StyleProfileDTO?
     let wardrobe: [GarmentSummary]
     let inspirationExamples: [InspirationExample]
+    let focusGarmentIDs: [UUID]
+    let resultLimit: Int
     let garmentVisuals, inspirationVisuals: [VisualReference]
 }
 private struct WardrobeGapRequest: Codable {

@@ -6,6 +6,8 @@ struct WishlistView: View {
     @Binding var showSettings: Bool
     let initialQuery: String
     let autoSearch: Bool
+    let shopOnly: Bool
+    let focusGarmentIDs: [UUID]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query private var garments: [Garment]
@@ -24,11 +26,19 @@ struct WishlistView: View {
     @State private var shopError: String?
     @State private var showShoppingPreferences = false
     @State private var didAutoRefresh = false
+    @State private var shopStage = ""
+    @State private var shopEstimateSeconds: Int?
+    @State private var shopEstimateUpdatedAt = Date.now
 
-    init(showSettings: Binding<Bool>, initialQuery: String = "", autoSearch: Bool = false) {
+    init(
+        showSettings: Binding<Bool>, initialQuery: String = "", autoSearch: Bool = false,
+        shopOnly: Bool = false, focusGarmentIDs: [UUID] = []
+    ) {
         _showSettings = showSettings
         self.initialQuery = initialQuery
         self.autoSearch = autoSearch
+        self.shopOnly = shopOnly
+        self.focusGarmentIDs = focusGarmentIDs
         _shopQuery = State(initialValue: initialQuery)
     }
 
@@ -45,8 +55,12 @@ struct WishlistView: View {
             WearwellTheme.cream.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 20) {
-                    EditorialHeader(eyebrow: "Shop your wardrobe first", title: "Shop", subtitle: "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe.")
-                    VStack(alignment: .leading, spacing: 14) {
+                    EditorialHeader(
+                        eyebrow: shopOnly ? "For this exact outfit" : "Shop your wardrobe first",
+                        title: shopOnly ? "Pieces to complete the look" : "Shop",
+                        subtitle: shopOnly ? "Luna is matching real products to the clothes already on your collage." : "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe."
+                    )
+                    if !shopOnly { VStack(alignment: .leading, spacing: 14) {
                         Text("Should I buy this?").font(.title3.bold())
                         Text("Submit any product, then build outfits with clothes you already own.").font(.subheadline).foregroundStyle(.secondary)
                         PhotosPicker(selection: $photo, matching: .images) {
@@ -71,6 +85,7 @@ struct WishlistView: View {
                     }
                     .padding(20)
                     .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+                    }
 
                     if working {
                         VStack(spacing: 8) {
@@ -113,8 +128,11 @@ struct WishlistView: View {
                             .accessibilityLabel("Refresh personalized picks")
                         }
                         if shopWorking || activeFeed != nil {
-                            ProgressView(activeFeed?.stageText ?? "Searching and verifying product pages…")
-                            Text("The paired Mac keeps working if you leave this screen.").font(.caption2).foregroundStyle(.secondary)
+                            ShopProcessingStatus(
+                                stage: shopStage.isEmpty ? (activeFeed?.stageText ?? "Searching and verifying product pages…") : shopStage,
+                                estimatedSeconds: shopEstimateSeconds,
+                                estimateUpdatedAt: shopEstimateUpdatedAt
+                            )
                         }
                         if let shopError { Text(shopError).font(.caption).foregroundStyle(.red) }
                     }
@@ -148,7 +166,7 @@ struct WishlistView: View {
             }
             .refreshable { await startShopSearch(forcePersonalized: true) }
         }
-        .toolbar { SettingsButton(isPresented: $showSettings) }
+        .toolbar { if !shopOnly { SettingsButton(isPresented: $showSettings) } }
         .sheet(isPresented: $showShoppingPreferences) {
             if let shoppingProfile { NavigationStack { ShoppingPreferencesView(profile: shoppingProfile) } }
         }
@@ -272,12 +290,17 @@ struct WishlistView: View {
         shopWorking = true; shopError = nil
         let snapshot = ShopFeedSnapshot(query: query)
         context.insert(snapshot); try? context.save()
+        shopStage = "Starting Luna's product search"
+        shopEstimateSeconds = 120
+        shopEstimateUpdatedAt = .now
         do {
             let job = try await companion.submitShopDiscovery(
                 query: query, garments: garments, styleProfile: styleProfiles.first,
-                inspirations: inspirations, shoppingProfile: shoppingProfile.preferences
+                inspirations: inspirations, shoppingProfile: shoppingProfile.preferences,
+                focusGarmentIDs: focusGarmentIDs, resultLimit: shopOnly ? 6 : 60
             )
             snapshot.jobID = job.id; snapshot.state = job.state
+            updateProgress(from: job)
             try context.save()
         } catch {
             snapshot.state = "failed"; snapshot.errorMessage = error.localizedDescription
@@ -291,6 +314,7 @@ struct WishlistView: View {
         do {
             let job = try await companion.shopDiscoveryJob(id: id)
             snapshot.state = job.state; snapshot.errorMessage = job.error
+            updateProgress(from: job)
             if let feed = job.result {
                 let dismissed = shoppingProfile?.preferences.dismissedProductIDs ?? []
                 snapshot.query = feed.query
@@ -312,6 +336,12 @@ struct WishlistView: View {
             snapshot.state = "failed"; snapshot.errorMessage = "This product search expired. Refresh to try again."
             shopError = snapshot.errorMessage; try? context.save()
         } catch { /* keep the local job active while the Mac is temporarily unavailable */ }
+    }
+
+    private func updateProgress(from job: ShopDiscoveryJobDTO) {
+        shopStage = job.stage ?? (job.state == "queued" ? "Queued for Luna" : "Finding products")
+        shopEstimateSeconds = job.estimatedSecondsRemaining
+        shopEstimateUpdatedAt = .now
     }
 
     private func dismiss(_ product: DiscoveredProductDTO, from feed: ShopFeedSnapshot) {
@@ -453,6 +483,36 @@ private extension ShopFeedSnapshot {
     var stageText: String {
         if state == "queued" { return "Queued product search…" }
         return products.isEmpty ? "Searching selected catalogs…" : "Finding more visually matched pieces…"
+    }
+}
+
+private struct ShopProcessingStatus: View {
+    let stage: String
+    let estimatedSeconds: Int?
+    let estimateUpdatedAt: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let elapsed = Int(max(0, timeline.date.timeIntervalSince(estimateUpdatedAt)))
+            let remaining = estimatedSeconds.map { max(0, $0 - elapsed) }
+            HStack(spacing: 12) {
+                ProgressView()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(stage).font(.subheadline.weight(.semibold))
+                    Text(remaining.map(estimateText) ?? "Luna is still working—results will appear here as they’re ready.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func estimateText(_ seconds: Int) -> String {
+        if seconds <= 0 { return "Finishing up—results should appear shortly." }
+        if seconds < 60 { return "About \(seconds) seconds remaining." }
+        let minutes = Int(ceil(Double(seconds) / 60))
+        return "About \(minutes) minute\(minutes == 1 ? "" : "s") remaining."
     }
 }
 
