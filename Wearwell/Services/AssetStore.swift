@@ -58,10 +58,11 @@ actor AssetStore {
         self.container = container
     }
 
-    func save(_ data: Data, preferredExtension: String = "jpg") throws -> String {
+    func save(_ data: Data, preferredExtension: String = "jpg", preparedCollage: Bool = false) throws -> String {
         let name = "\(UUID().uuidString).\(preferredExtension)"
         let url = directory.appending(path: name)
         try data.write(to: url, options: [.atomic, .completeFileProtection])
+        if preparedCollage { Self.installPreparedCollageData(data, named: name) }
         if let container {
             let context = ModelContext(container)
             context.insert(AssetBlob(name: name, data: data))
@@ -224,6 +225,12 @@ actor AssetStore {
             attributes: [.protectionKey: FileProtectionType.complete]
         )
         try? data.write(to: url, options: [.atomic, .completeFileProtection])
+    }
+
+    private nonisolated static func installPreparedCollageData(_ data: Data, named name: String) {
+        guard let image = UIImage(data: data) else { return }
+        collageCache.values.setObject(image, forKey: collageCacheKey(for: name))
+        persistCollageImage(image, named: name)
     }
 
     private nonisolated static func removeCachedCollageImage(named name: String) {
@@ -438,8 +445,13 @@ enum ImageTransparencyDetector {
 }
 
 enum ForegroundSubjectExtractor {
+    private static let extractionLock = NSLock()
+
     static func extract(from source: UIImage) -> UIImage? {
         guard source.size.width > 0, source.size.height > 0 else { return nil }
+        extractionLock.lock()
+        defer { extractionLock.unlock() }
+        guard !Task.isCancelled else { return nil }
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1

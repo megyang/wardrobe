@@ -14,6 +14,7 @@ private struct ReviewCandidate: Identifiable {
     var details: String
     var accepted = true
     var catalogData: Data?
+    var catalogDataIsPrepared = false
     var sourceData: Data
     var sourceURL: String?
     var showsSource = false
@@ -50,31 +51,41 @@ struct AddClothesView: View {
     @State private var urlText = ""
     @State private var importingURL = false
     @State private var reviews: [ReviewCandidate] = []
+    @State private var savingConfirmed = false
+    @State private var saveCompleted = 0
+    @State private var saveTotal = 0
     @State private var error: String?
 
     private var working: Bool { drafts.contains { ["pending", "submitting", "queued", "processing"].contains($0.state) } }
+    private let reviewSectionID = "ready-import-reviews"
 
     var body: some View {
         ZStack {
             WearwellTheme.cream.ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 22) {
-                    EditorialHeader(eyebrow: "Build your closet", title: "Add clothes", subtitle: "Wearwell sees only the images you explicitly choose.")
-                    photoImportCard
-                    Button { showCamera = true } label: { ImportCard(icon: "camera", title: "Take a photo", detail: "Photograph one item or a complete worn look.") }.buttonStyle(.plain)
-                    urlImportCard
-                    if working {
-                        VStack(spacing: 8) {
-                            ProgressView("Luna is identifying visible clothes…")
-                            Text("Once an import says Queued, you can lock your phone. The Mac will keep working.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        }.padding()
-                    }
-                    if !drafts.isEmpty { jobSection }
-                    if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
-                    if !reviews.isEmpty { reviewSection }
-                }.padding()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 22) {
+                        EditorialHeader(eyebrow: "Build your closet", title: "Add clothes", subtitle: "Wearwell sees only the images you explicitly choose.")
+                        photoImportCard
+                        Button { showCamera = true } label: { ImportCard(icon: "camera", title: "Take a photo", detail: "Photograph one item or a complete worn look.") }.buttonStyle(.plain)
+                        urlImportCard
+                        if working {
+                            VStack(spacing: 8) {
+                                ProgressView("Luna is identifying visible clothes…")
+                                Text("Once an import says Queued, you can lock your phone. The Mac will keep working.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            }.padding()
+                        }
+                        if !reviews.isEmpty { reviewSection.id(reviewSectionID) }
+                        if !drafts.isEmpty { jobSection }
+                        if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
+                    }.padding()
+                }
+                .onChange(of: reviews.count) { oldCount, newCount in
+                    guard oldCount == 0, newCount > 0 else { return }
+                    withAnimation(.easeInOut) { proxy.scrollTo(reviewSectionID, anchor: .top) }
+                }
+                .scrollDismissesKeyboard(.interactively)
             }
-            .scrollDismissesKeyboard(.interactively)
         }
         .toolbar { SettingsButton(isPresented: $showSettings) }
         .onChange(of: pickerItems) { _, items in Task { await importItems(items) } }
@@ -231,7 +242,14 @@ struct AddClothesView: View {
                 }
                 }
             }
-            Button { Task { await saveConfirmed() } } label: { Label("Save confirmed items", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).disabled(!reviews.contains(where: \.accepted))
+            Button { Task { await saveConfirmed() } } label: {
+                HStack {
+                    if savingConfirmed { ProgressView().tint(.white) }
+                    Label(savingConfirmed ? "Saving \(saveCompleted) of \(saveTotal)…" : "Save confirmed items", systemImage: "checkmark.circle.fill")
+                }.frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(savingConfirmed || !reviews.contains(where: \.accepted))
         }
     }
 
@@ -314,23 +332,53 @@ struct AddClothesView: View {
         }
     }
     private func saveConfirmed() async {
+        guard !savingConfirmed else { return }
+        let acceptedReviews = reviews.filter(\.accepted)
+        guard !acceptedReviews.isEmpty else { return }
+        savingConfirmed = true; saveCompleted = 0; saveTotal = acceptedReviews.count; error = nil
+        defer { savingConfirmed = false }
+
         let reviewedDraftIDs = Set(reviews.map(\.draftID))
-        for review in reviews where review.accepted {
-            let duplicate = garments.contains { $0.fingerprint == review.analysis.fingerprint && !review.analysis.fingerprint.isEmpty }
-            if duplicate { continue }
+        var failedDraftIDs: Set<UUID> = []
+        var newGarments: [Garment] = []
+        var newAssetNames: [String] = []
+        var knownFingerprints = Set(garments.map(\.fingerprint).filter { !$0.isEmpty })
+        for review in acceptedReviews {
+            defer { saveCompleted += 1 }
+            let fingerprint = review.analysis.fingerprint
+            guard fingerprint.isEmpty || !knownFingerprints.contains(fingerprint) else { continue }
+            var savedSource: String?
+            var savedCatalog: String?
             do {
                 let source = try await AssetStore.shared.save(review.sourceData, preferredExtension: "jpg")
+                savedSource = source
                 let rawCatalog = review.catalogData ?? review.sourceData
-                let cleanedCatalog = await preparedCatalogData(rawCatalog) ?? rawCatalog
-                let catalog = try await AssetStore.shared.save(cleanedCatalog, preferredExtension: "png")
-                context.insert(Garment(label: review.label, category: review.category, subcategory: review.subcategory, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: review.analysis.fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion))
-            } catch { self.error = error.localizedDescription }
+                let cleanedCatalog = review.catalogDataIsPrepared ? rawCatalog : (await preparedCatalogData(rawCatalog) ?? rawCatalog)
+                let catalog = try await AssetStore.shared.save(cleanedCatalog, preferredExtension: "png", preparedCollage: true)
+                savedCatalog = catalog
+                newGarments.append(Garment(label: review.label, category: review.category, subcategory: review.subcategory, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion))
+                newAssetNames.append(contentsOf: [source, catalog])
+                if !fingerprint.isEmpty { knownFingerprints.insert(fingerprint) }
+            } catch {
+                failedDraftIDs.insert(review.draftID)
+                await AssetStore.shared.remove(named: savedCatalog)
+                await AssetStore.shared.remove(named: savedSource)
+                self.error = "Some items could not be saved: \(error.localizedDescription)"
+            }
         }
-        for draft in drafts where reviewedDraftIDs.contains(draft.id) {
-            for name in draft.sourceAssetNames { await AssetStore.shared.remove(named: name) }
-            context.delete(draft)
+        let completedDrafts = drafts.filter { reviewedDraftIDs.contains($0.id) && !failedDraftIDs.contains($0.id) }
+        let completedDraftAssetNames = completedDrafts.flatMap(\.sourceAssetNames)
+        for garment in newGarments { context.insert(garment) }
+        for draft in completedDrafts { context.delete(draft) }
+        do {
+            try context.save()
+            for name in completedDraftAssetNames { await AssetStore.shared.remove(named: name) }
+            reviews.removeAll { !failedDraftIDs.contains($0.draftID) }
+        } catch {
+            context.rollback()
+            for name in newAssetNames { await AssetStore.shared.remove(named: name) }
+            self.error = "The wardrobe could not be updated: \(error.localizedDescription)"
         }
-        try? context.save(); reviews = []
     }
 
     private func submit(_ draft: ImportDraft) async {
@@ -354,6 +402,7 @@ struct AddClothesView: View {
     }
 
     private func refreshDrafts() async {
+        var completedJobIDs: [String] = []
         for draft in drafts {
             if isOverdue(draft) {
                 if let id = draft.remoteJobID { await companion.deleteAnalysisJob(id: id) }
@@ -368,7 +417,7 @@ struct AddClothesView: View {
                 apply(job, to: draft)
                 if let items = job.result?.items {
                     draft.analyses = items; draft.state = "ready"; try context.save()
-                    await companion.deleteAnalysisJob(id: id)
+                    completedJobIDs.append(id)
                 } else { try context.save() }
             } catch ClientError.jobNotFound {
                 markUnavailable(draft, message: "Job not found or expired. Tap Retry to submit it again.")
@@ -378,26 +427,58 @@ struct AddClothesView: View {
             }
         }
         await hydrateReadyDrafts()
+        for id in completedJobIDs { await companion.deleteAnalysisJob(id: id) }
     }
 
     private func hydrateReadyDrafts() async {
+        var pendingPreviews: [(candidateID: UUID, data: Data)] = []
         for draft in drafts where draft.state == "ready" {
-            guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName) else { continue }
-            for item in draft.analyses where !reviews.contains(where: { $0.draftID == draft.id && $0.analysis.id == item.id }) {
-                let category = GarmentCategory(rawValue: item.category) ?? .tops
-                let subcategory = item.subcategory.flatMap(GarmentSubcategory.init(rawValue:))
-                let catalogData = await preparedCatalogData(item.catalogImageBase64.flatMap { Data(base64Encoded: $0) })
-                reviews.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategory: subcategory?.category == category ? subcategory : nil, color: item.color, details: item.description, catalogData: catalogData, sourceData: sourceData, sourceURL: draft.sourceURL))
+            pendingPreviews.append(contentsOf: await hydrateReadyDraft(draft))
+        }
+        await prepareCatalogPreviews(pendingPreviews)
+    }
+
+    private func hydrateReadyDraft(_ draft: ImportDraft) async -> [(candidateID: UUID, data: Data)] {
+        let missingItems = draft.analyses.filter { item in
+            !reviews.contains(where: { $0.draftID == draft.id && $0.analysis.id == item.id })
+        }
+        guard !missingItems.isEmpty else { return [] }
+        guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName) else { return [] }
+        var pendingPreviews: [(candidateID: UUID, data: Data)] = []
+        for item in missingItems {
+            let category = GarmentCategory(rawValue: item.category) ?? .tops
+            let subcategory = item.subcategory.flatMap(GarmentSubcategory.init(rawValue:))
+            let candidate = ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategory: subcategory?.category == category ? subcategory : nil, color: item.color, details: item.description, catalogData: nil, sourceData: sourceData, sourceURL: draft.sourceURL)
+            reviews.append(candidate)
+            if let data = item.catalogImageBase64.flatMap({ Data(base64Encoded: $0) }) {
+                pendingPreviews.append((candidate.id, data))
             }
+        }
+        return pendingPreviews
+    }
+
+    private func prepareCatalogPreviews(_ pendingPreviews: [(candidateID: UUID, data: Data)]) async {
+        // Cards become usable immediately with their source image. Prepare generated
+        // previews one at a time so a large import cannot saturate Vision and stall UI.
+        for preview in pendingPreviews {
+            guard !Task.isCancelled else { break }
+            let prepared = await preparedCatalogData(preview.data)
+            guard !Task.isCancelled, let index = reviews.firstIndex(where: { $0.id == preview.candidateID }) else { continue }
+            reviews[index].catalogData = prepared
+            reviews[index].catalogDataIsPrepared = prepared != nil
         }
     }
 
     private func preparedCatalogData(_ data: Data?) async -> Data? {
         guard let data else { return nil }
-        return await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .utility) {
             guard let image = UIImage(data: data) else { return data }
             return AssetStore.preparedCollageImage(from: image).pngData() ?? data
-        }.value
+        }
+        return await withTaskCancellationHandler(
+            operation: { await task.value },
+            onCancel: { task.cancel() }
+        )
     }
 
     private func jobLabel(_ state: String) -> String {

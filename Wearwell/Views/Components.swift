@@ -87,9 +87,13 @@ struct CollageAssetImage: View {
                 loadedName = name
                 return
             }
-            let result = await Task.detached(priority: .userInitiated) {
+            let task = Task.detached(priority: .userInitiated) {
                 SendableImage(value: AssetStore.collageImage(named: name))
-            }.value
+            }
+            let result = await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() }
+            )
             if !Task.isCancelled {
                 cutout = result.value
                 loadedName = name
@@ -112,10 +116,14 @@ struct CatalogDataImage: View {
         }
         .task(id: data) {
             cutout = nil
-            let previewData = await Task.detached(priority: .userInitiated) {
+            let task = Task.detached(priority: .userInitiated) {
                 guard let source = UIImage(data: data) else { return nil as Data? }
                 return AssetStore.preparedCollageImage(from: source).pngData()
-            }.value
+            }
+            let previewData = await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() }
+            )
             if !Task.isCancelled { cutout = previewData.flatMap(UIImage.init(data:)) }
         }
     }

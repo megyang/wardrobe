@@ -33,13 +33,24 @@ enum WearwellSchemaV3: VersionedSchema {
 
 enum WearwellSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
-    static let models: [any PersistentModel.Type] = WearwellSchemaV3.models
+    static let models: [any PersistentModel.Type] = [
+        Garment.self, WishlistItem.self, Outfit.self, Visualization.self,
+        ReferencePhoto.self, ImportDraft.self, InspirationLook.self,
+        StyleProfile.self, StyleGeneration.self, AssetBlob.self,
+        ShoppingProfile.self, ShopFeedSnapshot.self, PurchaseNeed.self,
+        PackingTrip.self
+    ]
+}
+
+enum WearwellSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+    static let models: [any PersistentModel.Type] = WearwellSchemaV4.models
 }
 
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV4.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV5.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,

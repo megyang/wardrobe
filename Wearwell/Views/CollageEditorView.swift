@@ -279,14 +279,14 @@ struct CollageEditorView: View {
         let names = Array(Set(items.compactMap(imageName(for:))))
         guard !names.isEmpty else { preparing = false; preparedCount = 0; preparationTotal = 0; return }
         preparationStartedAt = .now; preparedCount = 0; preparationTotal = names.count; preparing = true
-        await withTaskGroup(of: Void.self) { group in
-            for name in names {
-                group.addTask { _ = AssetStore.collageImage(named: name) }
-            }
-            for await _ in group {
-                if Task.isCancelled { return }
-                preparedCount += 1
-            }
+        for name in names {
+            guard !Task.isCancelled else { return }
+            let task = Task.detached(priority: .utility) { _ = AssetStore.collageImage(named: name) }
+            await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() }
+            )
+            preparedCount += 1
         }
         if !Task.isCancelled { preparing = false }
     }

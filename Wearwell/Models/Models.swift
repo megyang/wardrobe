@@ -112,6 +112,18 @@ struct LayoutItem: Codable, Identifiable, Equatable {
     }
 }
 
+struct PackingAssignment: Codable, Identifiable, Equatable {
+    var id: UUID
+    var day: Date
+    var outfitID: UUID
+
+    init(id: UUID = UUID(), day: Date, outfitID: UUID, calendar: Calendar = .current) {
+        self.id = id
+        self.day = calendar.startOfDay(for: day)
+        self.outfitID = outfitID
+    }
+}
+
 enum OutfitLayout {
     private static let horizontalSpan = 0.82
     private static let verticalSpan = 0.82
@@ -320,6 +332,97 @@ enum OutfitLayout {
         self.id = id; self.title = title; self.notes = notes; self.rationale = rationale
         self.originRaw = origin.rawValue; self.layoutJSON = (try? JSONEncoder().encode(layout)) ?? Data()
         self.wishlistItemID = wishlistItemID; self.createdAt = .now; self.updatedAt = .now
+    }
+}
+
+@Model final class PackingTrip {
+    var id: UUID
+    var title: String
+    var startDate: Date
+    var endDate: Date
+    var assignmentsJSON: Data
+    var packedGarmentIDsJSON: Data
+    var createdAt: Date
+    var updatedAt: Date
+
+    var assignments: [PackingAssignment] {
+        get { (try? JSONDecoder().decode([PackingAssignment].self, from: assignmentsJSON)) ?? [] }
+        set { assignmentsJSON = (try? JSONEncoder().encode(newValue)) ?? Data() }
+    }
+    var packedGarmentIDs: Set<UUID> {
+        get { Set((try? JSONDecoder().decode([UUID].self, from: packedGarmentIDsJSON)) ?? []) }
+        set { packedGarmentIDsJSON = (try? JSONEncoder().encode(newValue.sorted { $0.uuidString < $1.uuidString })) ?? Data() }
+    }
+
+    init(id: UUID = UUID(), title: String, startDate: Date, endDate: Date, assignments: [PackingAssignment] = [], packedGarmentIDs: Set<UUID> = [], createdAt: Date = .now, updatedAt: Date = .now, calendar: Calendar = .current) {
+        self.id = id
+        self.title = title
+        self.startDate = calendar.startOfDay(for: startDate)
+        self.endDate = max(calendar.startOfDay(for: endDate), calendar.startOfDay(for: startDate))
+        self.assignmentsJSON = (try? JSONEncoder().encode(assignments)) ?? Data()
+        self.packedGarmentIDsJSON = (try? JSONEncoder().encode(packedGarmentIDs.sorted { $0.uuidString < $1.uuidString })) ?? Data()
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    @discardableResult
+    func addAssignment(day: Date, outfitID: UUID, calendar: Calendar = .current) -> Bool {
+        let normalized = calendar.startOfDay(for: day)
+        var values = assignments
+        guard !values.contains(where: { calendar.isDate($0.day, inSameDayAs: normalized) && $0.outfitID == outfitID }) else { return false }
+        values.append(PackingAssignment(day: normalized, outfitID: outfitID, calendar: calendar))
+        assignments = values
+        updatedAt = .now
+        return true
+    }
+
+    func removeAssignment(id: UUID) {
+        assignments = assignments.filter { $0.id != id }
+        updatedAt = .now
+    }
+
+    func setPacked(_ isPacked: Bool, garmentID: UUID) {
+        var values = packedGarmentIDs
+        if isPacked { values.insert(garmentID) } else { values.remove(garmentID) }
+        packedGarmentIDs = values
+        updatedAt = .now
+    }
+
+    func reconcilePackedGarments(requiredIDs: Set<UUID>) {
+        let reconciled = packedGarmentIDs.intersection(requiredIDs)
+        guard reconciled != packedGarmentIDs else { return }
+        packedGarmentIDs = reconciled
+        updatedAt = .now
+    }
+
+    func days(calendar: Calendar = .current) -> [Date] {
+        let first = calendar.startOfDay(for: startDate)
+        let last = max(calendar.startOfDay(for: endDate), first)
+        var result: [Date] = []
+        var current = first
+        while current <= last {
+            result.append(current)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: current) else { break }
+            current = next
+        }
+        return result
+    }
+}
+
+enum PackingListBuilder {
+    static func requiredGarmentIDs(assignments: [PackingAssignment], outfits: [Outfit]) -> Set<UUID> {
+        let selectedOutfitIDs = Set(assignments.map(\.outfitID))
+        return Set(outfits.lazy.filter { selectedOutfitIDs.contains($0.id) }.flatMap(\.layout).compactMap(\.garmentID))
+    }
+
+    static func requiredGarments(assignments: [PackingAssignment], outfits: [Outfit], garments: [Garment]) -> [Garment] {
+        let ids = requiredGarmentIDs(assignments: assignments, outfits: outfits)
+        let categoryOrder = Dictionary(uniqueKeysWithValues: GarmentCategory.allCases.enumerated().map { ($0.element, $0.offset) })
+        return garments.filter { ids.contains($0.id) }.sorted {
+            let lhs = categoryOrder[$0.category] ?? .max
+            let rhs = categoryOrder[$1.category] ?? .max
+            return lhs == rhs ? $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending : lhs < rhs
+        }
     }
 }
 

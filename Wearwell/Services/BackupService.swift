@@ -17,6 +17,7 @@ struct WearwellBackupManifest: Codable {
     var styleProfiles: [StyleProfileRecord]
     var shoppingProfiles: [ShoppingProfileRecord]? = nil
     var purchaseNeeds: [PurchaseNeedRecord]? = nil
+    var packingTrips: [PackingTripRecord]? = nil
     var assets: [AssetRecord]
 
     struct GarmentRecord: Codable {
@@ -64,6 +65,12 @@ struct WearwellBackupManifest: Codable {
         var id: UUID; var title: String; var categoryRaw: String; var subcategoryRaw: String?
         var rationale: String; var searchQuery: String; var isLunaSuggested: Bool
         var isCompleted: Bool; var createdAt: Date; var updatedAt: Date
+    }
+
+    struct PackingTripRecord: Codable {
+        var id: UUID; var title: String; var startDate: Date; var endDate: Date
+        var assignmentsJSON: Data; var packedGarmentIDsJSON: Data
+        var createdAt: Date; var updatedAt: Date
     }
 
     struct AssetRecord: Codable {
@@ -185,6 +192,7 @@ enum BackupService {
         let profiles = try context.fetch(FetchDescriptor<StyleProfile>())
         let shoppingProfiles = try context.fetch(FetchDescriptor<ShoppingProfile>())
         let purchaseNeeds = try context.fetch(FetchDescriptor<PurchaseNeed>())
+        let packingTrips = try context.fetch(FetchDescriptor<PackingTrip>())
         let blobs = try context.fetch(FetchDescriptor<AssetBlob>())
 
         var assetRecords: [String: WearwellBackupManifest.AssetRecord] = [:]
@@ -217,6 +225,7 @@ enum BackupService {
             styleProfiles: profiles.map { .init(id: $0.id, signature: $0.signature, revision: $0.revision, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
             shoppingProfiles: shoppingProfiles.map { .init(id: $0.id, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
             purchaseNeeds: purchaseNeeds.map { .init(id: $0.id, title: $0.title, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, rationale: $0.rationale, searchQuery: $0.searchQuery, isLunaSuggested: $0.isLunaSuggested, isCompleted: $0.isCompleted, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
+            packingTrips: packingTrips.map { .init(id: $0.id, title: $0.title, startDate: $0.startDate, endDate: $0.endDate, assignmentsJSON: $0.assignmentsJSON, packedGarmentIDsJSON: $0.packedGarmentIDsJSON, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
             assets: assetRecords.values.sorted { $0.name < $1.name }
         )
         let encoder = JSONEncoder.wearwell
@@ -242,7 +251,11 @@ enum BackupService {
         guard manifest.garments.allSatisfy({ (try? JSONDecoder().decode([String].self, from: $0.unknownsJSON)) != nil }),
               manifest.outfits.allSatisfy({ (try? JSONDecoder().decode([LayoutItem].self, from: $0.layoutJSON)) != nil }),
               manifest.styleProfiles.allSatisfy({ (try? JSONDecoder().decode(StyleProfileDTO.self, from: $0.profileJSON)) != nil }),
-              (manifest.shoppingProfiles ?? []).allSatisfy({ (try? JSONDecoder().decode(ShoppingProfileDTO.self, from: $0.profileJSON)) != nil })
+              (manifest.shoppingProfiles ?? []).allSatisfy({ (try? JSONDecoder().decode(ShoppingProfileDTO.self, from: $0.profileJSON)) != nil }),
+              (manifest.packingTrips ?? []).allSatisfy({
+                  (try? JSONDecoder().decode([PackingAssignment].self, from: $0.assignmentsJSON)) != nil &&
+                  (try? JSONDecoder().decode([UUID].self, from: $0.packedGarmentIDsJSON)) != nil
+              })
         else { throw BackupError.invalidPackage("The backup contains invalid wardrobe records.") }
 
         var applied = 0
@@ -308,6 +321,13 @@ enum BackupService {
             item.rationale = record.rationale; item.searchQuery = record.searchQuery; item.isLunaSuggested = record.isLunaSuggested
             item.isCompleted = record.isCompleted; item.createdAt = record.createdAt; item.updatedAt = record.updatedAt; applied += 1
         }
+        for record in manifest.packingTrips ?? [] {
+            let item = try fetch(id: record.id, from: context) ?? PackingTrip(id: record.id, title: record.title, startDate: record.startDate, endDate: record.endDate)
+            if item.modelContext == nil { context.insert(item) }
+            item.title = record.title; item.startDate = record.startDate; item.endDate = record.endDate
+            item.assignmentsJSON = record.assignmentsJSON; item.packedGarmentIDsJSON = record.packedGarmentIDsJSON
+            item.createdAt = record.createdAt; item.updatedAt = record.updatedAt; applied += 1
+        }
 
         let existingBlobs = try context.fetch(FetchDescriptor<AssetBlob>())
         let grouped = Dictionary(grouping: existingBlobs, by: \.name)
@@ -347,6 +367,7 @@ enum BackupService {
         if T.self == StyleProfile.self { return try fetchProfile(id, context) as? T }
         if T.self == ShoppingProfile.self { return try fetchShoppingProfile(id, context) as? T }
         if T.self == PurchaseNeed.self { return try fetchPurchaseNeed(id, context) as? T }
+        if T.self == PackingTrip.self { return try fetchPackingTrip(id, context) as? T }
         return nil
     }
 
@@ -359,6 +380,7 @@ enum BackupService {
     private static func fetchProfile(_ id: UUID, _ context: ModelContext) throws -> StyleProfile? { var d = FetchDescriptor<StyleProfile>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchShoppingProfile(_ id: UUID, _ context: ModelContext) throws -> ShoppingProfile? { var d = FetchDescriptor<ShoppingProfile>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchPurchaseNeed(_ id: UUID, _ context: ModelContext) throws -> PurchaseNeed? { var d = FetchDescriptor<PurchaseNeed>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
+    private static func fetchPackingTrip(_ id: UUID, _ context: ModelContext) throws -> PackingTrip? { var d = FetchDescriptor<PackingTrip>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
 }
 
 private extension JSONEncoder {

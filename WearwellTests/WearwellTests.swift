@@ -10,7 +10,10 @@ final class WearwellTests: XCTestCase {
         let sourceContext = source.mainContext
         let image = Data("catalog-image".utf8)
         let id = UUID()
+        let outfitID = UUID()
         sourceContext.insert(Garment(id: id, label: "Blue shirt", category: .tops, color: "Blue", sourceAssetName: "shirt.jpg", catalogAssetName: "shirt.jpg"))
+        sourceContext.insert(Outfit(id: outfitID, title: "Travel day", origin: .manual, layout: [LayoutItem(garmentID: id)]))
+        sourceContext.insert(PackingTrip(title: "Montreal", startDate: .now, endDate: .now, assignments: [PackingAssignment(day: .now, outfitID: outfitID)], packedGarmentIDs: [id]))
         sourceContext.insert(AssetBlob(name: "shirt.jpg", data: image))
         try sourceContext.save()
 
@@ -27,8 +30,9 @@ final class WearwellTests: XCTestCase {
         let second = try await BackupService.restore(decoded, context: destinationContext)
         let garments = try destinationContext.fetch(FetchDescriptor<Garment>())
         let blobs = try destinationContext.fetch(FetchDescriptor<AssetBlob>())
+        let trips = try destinationContext.fetch(FetchDescriptor<PackingTrip>())
 
-        XCTAssertEqual(first.recordsApplied, 1)
+        XCTAssertEqual(first.recordsApplied, 3)
         XCTAssertEqual(first.assetsApplied, 1)
         XCTAssertEqual(second.assetsApplied, 0)
         XCTAssertEqual(second.assetsUnchanged, 1)
@@ -36,6 +40,88 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(garments.first(where: { $0.id == id })?.label, "Blue shirt")
         XCTAssertEqual(blobs.count, 1)
         XCTAssertEqual(blobs.first?.data, image)
+        XCTAssertEqual(trips.first?.title, "Montreal")
+        XCTAssertEqual(trips.first?.packedGarmentIDs, [id])
+    }
+
+    @MainActor
+    func testBackupWithoutPackingTripsStillRestores() async throws {
+        let source = try makeInMemoryContainer()
+        source.mainContext.insert(Garment(label: "Coat", category: .outerwear, color: "Black"))
+        try source.mainContext.save()
+        let document = try await BackupService.makeDocument(context: source.mainContext)
+        var legacyManifest = document.archive.manifest
+        legacyManifest.packingTrips = nil
+        let legacy = WearwellBackupDocument(archive: .init(manifest: legacyManifest, assets: document.archive.assets))
+        let decoded = try WearwellBackupDocument(fileWrapper: legacy.packageFileWrapper())
+        let destination = try makeInMemoryContainer()
+
+        let result = try await BackupService.restore(decoded, context: destination.mainContext)
+
+        XCTAssertEqual(result.recordsApplied, 1)
+        XCTAssertTrue(try destination.mainContext.fetch(FetchDescriptor<PackingTrip>()).isEmpty)
+    }
+
+    func testPackingAssignmentsNormalizeDaysAndRejectDuplicates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: -5 * 60 * 60)!
+        let outfitID = UUID()
+        let morning = Date(timeIntervalSince1970: 1_767_268_800)
+        let evening = calendar.date(byAdding: .hour, value: 10, to: morning)!
+        let trip = PackingTrip(title: "Weekend", startDate: morning, endDate: evening, calendar: calendar)
+
+        XCTAssertTrue(trip.addAssignment(day: morning, outfitID: outfitID, calendar: calendar))
+        XCTAssertFalse(trip.addAssignment(day: evening, outfitID: outfitID, calendar: calendar))
+        XCTAssertEqual(trip.assignments.count, 1)
+        XCTAssertEqual(trip.assignments.first?.day, calendar.startOfDay(for: morning))
+    }
+
+    func testPackingListDeduplicatesAndOrdersGarmentsByCategory() {
+        let shoe = Garment(label: "Sneakers", category: .shoes, color: "White")
+        let top = Garment(label: "Shirt", category: .tops, color: "Blue")
+        let pants = Garment(label: "Pants", category: .bottoms, color: "Black")
+        let first = Outfit(title: "Day", origin: .manual, layout: [LayoutItem(garmentID: shoe.id), LayoutItem(garmentID: top.id)])
+        let second = Outfit(title: "Night", origin: .manual, layout: [LayoutItem(garmentID: top.id), LayoutItem(garmentID: pants.id), LayoutItem(garmentID: UUID())])
+        let assignments = [PackingAssignment(day: .now, outfitID: first.id), PackingAssignment(day: .now, outfitID: second.id), PackingAssignment(day: .now, outfitID: UUID())]
+
+        let result = PackingListBuilder.requiredGarments(assignments: assignments, outfits: [first, second], garments: [shoe, pants, top])
+
+        XCTAssertEqual(result.map(\.id), [top.id, pants.id, shoe.id])
+    }
+
+    func testPackingTripPrunesObsoletePackedState() {
+        let retained = UUID(), removed = UUID()
+        let trip = PackingTrip(title: "Trip", startDate: .now, endDate: .now, packedGarmentIDs: [retained, removed])
+
+        trip.reconcilePackedGarments(requiredIDs: [retained])
+
+        XCTAssertEqual(trip.packedGarmentIDs, [retained])
+    }
+
+    @MainActor
+    func testV3StoreMigratesToV4AndAcceptsPackingTrips() throws {
+        let storeURL = FileManager.default.temporaryDirectory.appending(path: "WearwellMigration-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV3.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            container.mainContext.insert(Garment(label: "Existing shirt", category: .tops, color: "Blue"))
+            try container.mainContext.save()
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV4.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            XCTAssertEqual(try container.mainContext.fetch(FetchDescriptor<Garment>()).count, 1)
+            container.mainContext.insert(PackingTrip(title: "New trip", startDate: .now, endDate: .now))
+            try container.mainContext.save()
+            XCTAssertEqual(try container.mainContext.fetch(FetchDescriptor<PackingTrip>()).count, 1)
+        }
     }
 
     @MainActor
@@ -551,7 +637,7 @@ final class WearwellTests: XCTestCase {
 
     @MainActor
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: WearwellSchemaV1.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV4.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

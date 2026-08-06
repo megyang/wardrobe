@@ -73,11 +73,18 @@ struct WardrobeView: View {
         }
         .task(id: cutoutPreparationKey) {
             let names = cutoutNames
-            await Task.detached(priority: .utility) {
+            let task = Task.detached(priority: .utility) {
                 // Warm the persistent cache sequentially to avoid competing
                 // Vision requests while visible cards load at user priority.
-                for name in names { _ = AssetStore.collageImage(named: name) }
-            }.value
+                for name in names {
+                    guard !Task.isCancelled else { return }
+                    _ = AssetStore.collageImage(named: name)
+                }
+            }
+            await withTaskCancellationHandler(
+                operation: { await task.value },
+                onCancel: { task.cancel() }
+            )
         }
     }
 

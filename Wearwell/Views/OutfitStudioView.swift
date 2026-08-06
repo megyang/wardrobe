@@ -27,6 +27,9 @@ struct OutfitStudioView: View {
                     }
                     .buttonStyle(.plain)
                     .overlay(alignment: .topTrailing) { if studioGenerations.contains(where: \.isUnread) { unreadDot } }
+                    NavigationLink { PackingTripsView() } label: {
+                        ModeCard(icon: "suitcase.rolling", title: "Packing", detail: "Plan outfits by day and build a categorized packing checklist.", color: WearwellTheme.sage)
+                    }.buttonStyle(.plain)
                     if !outfitProductFeeds.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Products for your outfits").font(.title2.bold())
