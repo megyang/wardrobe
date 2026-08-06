@@ -99,7 +99,8 @@ struct CollageEditorView: View {
         .sheet(isPresented: $showShopRecommendations) {
             NavigationStack {
                 WishlistView(
-                    showSettings: .constant(false), initialQuery: outfitShopQuery, autoSearch: true,
+                    showSettings: .constant(false), showActivity: .constant(false), activityCount: 0,
+                    initialQuery: outfitShopQuery, autoSearch: true,
                     shopOnly: true, focusGarmentIDs: Array(Set(items.compactMap(\.garmentID)))
                 )
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showShopRecommendations = false } } }
@@ -118,19 +119,27 @@ struct CollageEditorView: View {
     }
 
     private var controls: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 18) {
-                Button { showPicker = true } label: { Label("Add", systemImage: "plus") }
-                Button { recommendationCategory = nil; showRecommendationPicker = true } label: {
-                    Label(recommending ? "Asking Luna" : "Ask Luna", systemImage: "sparkles")
-                }
-                .disabled(recommending)
-                Button { snapLayout() } label: { Label("Arrange", systemImage: "rectangle.3.group") }.disabled(items.isEmpty)
-                Button { duplicateSelected() } label: { Label("Duplicate piece", systemImage: "plus.square.on.square") }.disabled(selectedID == nil)
-                Button(role: .destructive) { items.removeAll { $0.id == selectedID }; selectedID = nil } label: { Image(systemName: "trash") }.disabled(selectedID == nil)
+        HStack(spacing: 12) {
+            Button { showPicker = true } label: { Label("Add", systemImage: "plus") }
+            Button { recommendationCategory = nil; showRecommendationPicker = true } label: {
+                Label(recommending ? "Asking…" : "Ask Luna", systemImage: "sparkles")
             }
-            .font(.caption.weight(.semibold)).padding()
+            .disabled(recommending)
+            Button { requestPurchaseRecommendations() } label: { Label("Shop", systemImage: "bag") }
+                .disabled(items.compactMap(\.garmentID).isEmpty)
+            Spacer()
+            Menu {
+                Button("Arrange all", systemImage: "rectangle.3.group") { snapLayout() }
+                    .disabled(items.isEmpty)
+                Button("Duplicate selected", systemImage: "plus.square.on.square") { duplicateSelected() }
+                    .disabled(selectedID == nil)
+                Button("Delete selected", systemImage: "trash", role: .destructive) {
+                    items.removeAll { $0.id == selectedID }; selectedID = nil
+                }.disabled(selectedID == nil)
+            } label: { Image(systemName: "ellipsis.circle") }
+                .accessibilityLabel("Edit outfit items")
         }
+        .font(.caption.weight(.semibold)).padding(.horizontal, 14).padding(.vertical, 12)
         .frame(maxWidth: .infinity).background(.ultraThinMaterial)
     }
 
@@ -185,13 +194,13 @@ struct CollageEditorView: View {
                 } else {
                     Section("Finish this collage") {
                         Button { requestOwnedRecommendations() } label: {
-                            Label("Add 1–2 from my closet", systemImage: "tshirt")
+                            Label("From my closet", systemImage: "tshirt")
                         }
                         Button { requestPurchaseRecommendations() } label: {
-                            Label("Suggest 1–3 things to buy", systemImage: "bag.badge.plus")
+                            Label("Find products to buy", systemImage: "bag.badge.plus")
                         }
                     }
-                    Section("Or choose an owned category") {
+                    Section("Choose a closet category") {
                         ForEach(GarmentCategory.allCases) { category in
                             Button { recommendationCategory = category } label: {
                                 HStack {

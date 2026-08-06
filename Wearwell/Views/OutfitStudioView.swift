@@ -4,12 +4,15 @@ import SwiftUI
 
 struct OutfitStudioView: View {
     @Binding var showSettings: Bool
+    @Binding var showActivity: Bool
+    var activityCount: Int
     @Query(sort: \Outfit.updatedAt, order: .reverse) private var outfits: [Outfit]
     @Query private var garments: [Garment]
     @Query private var candidates: [WishlistItem]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var productFeeds: [ShopFeedSnapshot]
     @Query(sort: \StyleGeneration.createdAt, order: .reverse) private var studioGenerations: [StyleGeneration]
     @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
+    @State private var studioSection = "outfits"
     private var savedOutfits: [Outfit] { outfits.filter(\.belongsInOutfitLibrary) }
     private var outfitProductFeeds: [ShopFeedSnapshot] { productFeeds.filter(\.isOutfitSpecific) }
 
@@ -18,21 +21,41 @@ struct OutfitStudioView: View {
             WearwellTheme.cream.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 22) {
-                    EditorialHeader(eyebrow: "Mix what you own", title: "Outfit Studio", subtitle: "Collage freely, or let Luna find a starting point.")
-                    NavigationLink { CollageEditorView() } label: {
-                        ModeCard(icon: "hand.draw", title: "Manual collage", detail: "Choose, layer, resize, rotate, and arrange your clothes. Works offline.", color: WearwellTheme.sage)
-                    }.buttonStyle(.plain)
-                    NavigationLink { AIStyleView() } label: {
-                        ModeCard(icon: "sparkles", title: "AI Style", detail: "Let AI select owned pieces by ID, then arrange them yourself in the collage editor.", color: WearwellTheme.coral)
+                    EditorialHeader(eyebrow: "Mix what you own", title: "Outfit Studio", subtitle: "Create looks, ask Luna for ideas, or prepare for a trip.")
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                        NavigationLink { CollageEditorView() } label: {
+                            StudioActionCard(icon: "plus", title: "Create outfit", color: WearwellTheme.sage)
+                        }.buttonStyle(.plain)
+                        NavigationLink { AIStyleView() } label: {
+                            StudioActionCard(icon: "sparkles", title: "Style with Luna", color: WearwellTheme.coral)
+                        }
+                        .buttonStyle(.plain)
+                        .overlay(alignment: .topTrailing) { if studioGenerations.contains(where: \.isUnread) { unreadDot } }
+                        NavigationLink { PackingTripsView() } label: {
+                            StudioActionCard(icon: "suitcase.rolling", title: "Plan a trip", color: WearwellTheme.sage)
+                        }.buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                    .overlay(alignment: .topTrailing) { if studioGenerations.contains(where: \.isUnread) { unreadDot } }
-                    NavigationLink { PackingTripsView() } label: {
-                        ModeCard(icon: "suitcase.rolling", title: "Packing", detail: "Plan outfits by day and build a categorized packing checklist.", color: WearwellTheme.sage)
-                    }.buttonStyle(.plain)
+                    if outfitProductFeeds.contains(where: { ["queued", "processing"].contains($0.state) }) {
+                        Button { studioSection = "results" } label: {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Luna is finding outfit products").font(.subheadline.weight(.semibold))
+                                    Text("Keep using the app while this finishes.").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }.padding(13).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 15))
+                        }.buttonStyle(.plain)
+                    }
                     if !outfitProductFeeds.isEmpty {
+                        Picker("Studio section", selection: $studioSection) {
+                            Text("Outfits").tag("outfits")
+                            Text("Luna results").tag("results")
+                        }.pickerStyle(.segmented)
+                    }
+                    if studioSection == "results", !outfitProductFeeds.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Products for your outfits").font(.title2.bold())
+                            Text("Luna results").font(.title2.bold())
                             ForEach(outfitProductFeeds.prefix(8)) { feed in
                                 if ["queued", "processing"].contains(feed.state) {
                                     HStack(spacing: 12) {
@@ -65,8 +88,7 @@ struct OutfitStudioView: View {
                                 }
                             }
                         }.padding(.top, 8)
-                    }
-                    if !savedOutfits.isEmpty {
+                    } else if !savedOutfits.isEmpty {
                         HStack(alignment: .center) {
                             Text("Saved outfits").font(.title2.bold())
                             Spacer()
@@ -94,10 +116,15 @@ struct OutfitStudioView: View {
                                 }
                             }
                         }
+                    } else {
+                        VStack(spacing: 14) {
+                            EmptyState(icon: "sparkles.rectangle.stack", title: "No saved outfits", message: "Create an outfit yourself or let Luna choose a starting point.")
+                            NavigationLink("Create your first outfit") { CollageEditorView() }.buttonStyle(.borderedProminent)
+                        }.frame(minHeight: 260)
                     }
                 }.padding()
             }
-        }.toolbar { SettingsButton(isPresented: $showSettings) }
+        }.toolbar { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
     }
 
     private var unreadDot: some View {
@@ -207,15 +234,17 @@ private struct OutfitProductResultsView: View {
     }
 }
 
-private struct ModeCard: View {
-    let icon, title, detail: String
+private struct StudioActionCard: View {
+    let icon, title: String
     let color: Color
     var body: some View {
-        HStack(spacing: 18) {
-            Image(systemName: icon).font(.title).foregroundStyle(color).frame(width: 60, height: 60).background(color.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(.title2, design: .serif, weight: .semibold)); Text(detail).font(.subheadline).foregroundStyle(WearwellTheme.muted) }
-            Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
-        }.padding(20).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 20)).shadow(color: .black.opacity(0.05), radius: 18, y: 8)
+        VStack(spacing: 9) {
+            Image(systemName: icon).font(.title3.weight(.semibold)).foregroundStyle(color)
+                .frame(width: 42, height: 42).background(color.opacity(0.12), in: Circle())
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(WearwellTheme.ink).multilineTextAlignment(.center).lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 104)
+        .padding(9).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

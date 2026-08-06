@@ -12,38 +12,43 @@ struct RootTabView: View {
     @Query private var wishlistItems: [WishlistItem]
     @Query private var garments: [Garment]
     @Query private var outfits: [Outfit]
+    @Query private var inspirations: [InspirationLook]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var shopFeeds: [ShopFeedSnapshot]
     @Query(sort: \StyleGeneration.createdAt, order: .reverse) private var styleGenerations: [StyleGeneration]
     @State private var selection = 0
     @State private var showSettings = false
+    @State private var showActivity = false
 
     private var unreadStudioCount: Int {
         shopFeeds.filter { $0.isOutfitSpecific && $0.isUnread }.count + styleGenerations.filter(\.isUnread).count
     }
     private var unreadShopCount: Int { shopFeeds.filter { !$0.isOutfitSpecific && $0.isUnread }.count }
-    private var unreadWardrobeCount: Int { importDrafts.filter(\.isUnread).count }
+    private var unreadWardrobeCount: Int { importDrafts.filter(\.isUnread).count + garments.filter(\.isUnreadImageRegeneration).count }
+    private var unreadInspirationCount: Int { inspirations.filter(\.isUnreadAnalysis).count }
     private var unreadSavedCount: Int { wishlistItems.filter(\.isUnreadAssessment).count }
+    private var totalUnreadCount: Int { unreadStudioCount + unreadShopCount + unreadWardrobeCount + unreadInspirationCount + unreadSavedCount }
 
     var body: some View {
         TabView(selection: $selection) {
-            NavigationStack { WardrobeView(showSettings: $showSettings) }
+            NavigationStack { WardrobeView(showSettings: $showSettings, showActivity: $showActivity, activityCount: totalUnreadCount) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Wardrobe", systemImage: "square.grid.2x2") }.badge(unreadWardrobeCount).tag(0)
-            NavigationStack { OutfitStudioView(showSettings: $showSettings) }
+            NavigationStack { OutfitStudioView(showSettings: $showSettings, showActivity: $showActivity, activityCount: totalUnreadCount) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Studio", systemImage: "sparkles.rectangle.stack") }.badge(unreadStudioCount).tag(1)
-            NavigationStack { InspirationView(showSettings: $showSettings) }
+            NavigationStack { InspirationView(showSettings: $showSettings, showActivity: $showActivity, activityCount: totalUnreadCount) }
                 .keyboardDismissToolbar()
-                .tabItem { Label("Inspire", systemImage: "heart.rectangle") }.tag(2)
-            NavigationStack { WishlistView(showSettings: $showSettings) }
+                .tabItem { Label("Inspire", systemImage: "heart.rectangle") }.badge(unreadInspirationCount).tag(2)
+            NavigationStack { WishlistView(showSettings: $showSettings, showActivity: $showActivity, activityCount: totalUnreadCount) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Shop", systemImage: "bag") }.badge(unreadShopCount).tag(3)
-            NavigationStack { SavedItemsView(showSettings: $showSettings) }
+            NavigationStack { SavedItemsView(showSettings: $showSettings, showActivity: $showActivity, activityCount: totalUnreadCount) }
                 .keyboardDismissToolbar()
                 .tabItem { Label("Saved", systemImage: "heart.fill") }.badge(unreadSavedCount).tag(4)
         }
         .background(WearwellTheme.cream)
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() }.keyboardDismissToolbar() }
+        .sheet(isPresented: $showActivity) { ActivityCenterView(showSettings: $showSettings).keyboardDismissToolbar() }
         .task { await expireOverdueImports() }
         .task {
             while !Task.isCancelled {
@@ -171,5 +176,18 @@ struct RootTabView: View {
 
 struct SettingsButton: View {
     @Binding var isPresented: Bool
-    var body: some View { Button { isPresented = true } label: { Image(systemName: "person.crop.circle") }.accessibilityLabel("Settings") }
+    @Binding var showActivity: Bool
+    var activityCount: Int
+    var body: some View {
+        HStack(spacing: 14) {
+            Button { showActivity = true } label: {
+                Image(systemName: activityCount > 0 ? "bell.badge.fill" : "bell")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(WearwellTheme.coral, WearwellTheme.sage)
+            }
+            .accessibilityLabel(activityCount > 0 ? "Activity, \(activityCount) new" : "Activity")
+            Button { isPresented = true } label: { Image(systemName: "person.crop.circle") }
+                .accessibilityLabel("Settings")
+        }
+    }
 }

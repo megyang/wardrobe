@@ -187,6 +187,8 @@ enum OutfitLayout {
     var imageRegenerationState: String?
     var imageRegenerationStage: String?
     var imageRegenerationError: String?
+    var imageRegenerationUpdatedAt: Date?
+    var isUnreadImageRegeneration: Bool = false
     var pendingRegenerationSourceAssetName: String?
     var pendingRegenerationCatalogAssetName: String?
     var pendingRegenerationAnalysisJSON: Data?
@@ -511,6 +513,7 @@ struct StyleProfileDTO: Codable, Equatable {
     var isFavorite: Bool
     var createdAt: Date
     var updatedAt: Date
+    var isUnreadAnalysis: Bool = false
 
     var analysis: InspirationAnalysisDTO? {
         get { analysisJSON.flatMap { try? JSONDecoder().decode(InspirationAnalysisDTO.self, from: $0) } }

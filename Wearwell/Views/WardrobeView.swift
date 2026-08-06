@@ -5,6 +5,8 @@ import UIKit
 
 struct WardrobeView: View {
     @Binding var showSettings: Bool
+    @Binding var showActivity: Bool
+    var activityCount: Int
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
     @Query private var importDrafts: [ImportDraft]
     @Environment(\.modelContext) private var context
@@ -20,6 +22,7 @@ struct WardrobeView: View {
             (search.isEmpty || [garment.label, garment.color, garment.subcategory?.title ?? "", garment.tags, garment.occasion].joined(separator: " ").localizedCaseInsensitiveContains(search))
         }
     }
+    private var readyImportCount: Int { importDrafts.filter { $0.state == "ready" || $0.isUnread }.count }
 
     private var cutoutNames: [String] {
         garments.map { $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName }
@@ -36,10 +39,24 @@ struct WardrobeView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     EditorialHeader(eyebrow: "Your collection", title: "Wardrobe", subtitle: "Everything you own, ready to remix.")
+                    if readyImportCount > 0 {
+                        Button { showAdd = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(WearwellTheme.coral)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Review imported clothes").font(.headline)
+                                    Text("\(readyImportCount) import\(readyImportCount == 1 ? " is" : "s are") ready for you.").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }.padding(14).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                        }.buttonStyle(.plain)
+                    }
                     categoryStrip
                     if garments.isEmpty {
-                        EmptyState(icon: "tshirt", title: "Your wardrobe is waiting", message: "Use Add to catalog clothes from a photo, camera, or link.")
-                            .frame(minHeight: 380)
+                        VStack(spacing: 14) {
+                            EmptyState(icon: "tshirt", title: "Your wardrobe is waiting", message: "Add clothes from a photo, camera, or link to begin building outfits.")
+                            Button { showAdd = true } label: { Label("Add clothes", systemImage: "plus") }.buttonStyle(.borderedProminent)
+                        }.frame(minHeight: 380)
                     } else if filtered.isEmpty {
                         EmptyState(icon: "magnifyingglass", title: "No matches", message: "Try another search or category.").frame(minHeight: 300)
                     } else {
@@ -63,7 +80,7 @@ struct WardrobeView: View {
                     }
                 }.accessibilityLabel("Add clothes")
             }
-            ToolbarItem(placement: .topBarTrailing) { SettingsButton(isPresented: $showSettings) }
+            ToolbarItem(placement: .topBarTrailing) { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
         }
         .sheet(isPresented: $showAdd) {
             NavigationStack {
@@ -260,6 +277,7 @@ struct GarmentDetailView: View {
             Section { Button("Delete permanently", role: .destructive) { confirmDelete = true } }
         }
         .navigationTitle(garment.label).navigationBarTitleDisplayMode(.inline)
+        .onAppear { garment.isUnreadImageRegeneration = false; try? context.save() }
         .task(id: garment.imageRegenerationJobID) { await monitorImageRegeneration() }
         .sheet(isPresented: $showImageRegenerator) {
             GarmentImageRegenerationSheet(garment: garment)
@@ -291,6 +309,7 @@ struct GarmentDetailView: View {
                 let job = try await companion.analysisJob(id: jobID)
                 garment.imageRegenerationState = job.state
                 garment.imageRegenerationStage = job.stage ?? (job.state == "queued" ? "Waiting to regenerate" : "Regenerating image")
+                garment.imageRegenerationUpdatedAt = .now
                 try? context.save()
                 if job.state == "complete" {
                     try await installRegeneratedImage(from: job)
@@ -335,6 +354,8 @@ struct GarmentDetailView: View {
         garment.imageRegenerationState = "ready"
         garment.imageRegenerationStage = "Replacement ready to review"
         garment.imageRegenerationError = nil
+        garment.imageRegenerationUpdatedAt = .now
+        garment.isUnreadImageRegeneration = true
         do {
             try context.save()
         } catch {
@@ -360,6 +381,8 @@ struct GarmentDetailView: View {
         garment.imageRegenerationState = "failed"
         garment.imageRegenerationStage = nil
         garment.imageRegenerationError = message
+        garment.imageRegenerationUpdatedAt = .now
+        garment.isUnreadImageRegeneration = true
         try? context.save()
         await companion.deleteAnalysisJob(id: jobID)
     }
@@ -510,6 +533,8 @@ private struct GarmentImageRegenerationSheet: View {
             garment.imageRegenerationState = job.state
             garment.imageRegenerationStage = job.stage ?? "Queued for regeneration"
             garment.imageRegenerationError = nil
+            garment.imageRegenerationUpdatedAt = .now
+            garment.isUnreadImageRegeneration = false
             try context.save()
             dismiss()
         } catch {

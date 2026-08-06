@@ -4,6 +4,8 @@ import SwiftUI
 
 struct WishlistView: View {
     @Binding var showSettings: Bool
+    @Binding var showActivity: Bool
+    var activityCount: Int
     let initialQuery: String
     let autoSearch: Bool
     let shopOnly: Bool
@@ -15,6 +17,7 @@ struct WishlistView: View {
     @Query(sort: \InspirationLook.updatedAt, order: .reverse) private var inspirations: [InspirationLook]
     @Query(sort: \ShoppingProfile.updatedAt, order: .reverse) private var shoppingProfiles: [ShoppingProfile]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var feedSnapshots: [ShopFeedSnapshot]
+    @Query private var savedProducts: [WishlistItem]
     @State private var photo: PhotosPickerItem?
     @State private var url = ""
     @State private var working = false
@@ -29,12 +32,18 @@ struct WishlistView: View {
     @State private var shopStage = ""
     @State private var shopEstimateSeconds: Int?
     @State private var shopEstimateUpdatedAt = Date.now
+    @State private var shopMode = "discover"
+    @State private var savingProductIDs: Set<String> = []
+    @State private var saveNotice: String?
 
     init(
-        showSettings: Binding<Bool>, initialQuery: String = "", autoSearch: Bool = false,
+        showSettings: Binding<Bool>, showActivity: Binding<Bool> = .constant(false), activityCount: Int = 0,
+        initialQuery: String = "", autoSearch: Bool = false,
         shopOnly: Bool = false, focusGarmentIDs: [UUID] = []
     ) {
         _showSettings = showSettings
+        _showActivity = showActivity
+        self.activityCount = activityCount
         self.initialQuery = initialQuery
         self.autoSearch = autoSearch
         self.shopOnly = shopOnly
@@ -67,7 +76,13 @@ struct WishlistView: View {
                         title: shopOnly ? "Pieces to complete the look" : "Shop",
                         subtitle: shopOnly ? "Luna is matching real products to the clothes already on your collage." : "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe."
                     )
-                    if !shopOnly { VStack(alignment: .leading, spacing: 14) {
+                    if !shopOnly {
+                        Picker("Shop mode", selection: $shopMode) {
+                            Label("Discover", systemImage: "sparkles").tag("discover")
+                            Label("Check an item", systemImage: "checkmark.seal").tag("check")
+                        }.pickerStyle(.segmented)
+                    }
+                    if !shopOnly, shopMode == "check" { VStack(alignment: .leading, spacing: 14) {
                         Text("Should I buy this?").font(.title3.bold())
                         Text("Submit any product, then build outfits with clothes you already own.").font(.subheadline).foregroundStyle(.secondary)
                         PhotosPicker(selection: $photo, matching: .images) {
@@ -94,17 +109,18 @@ struct WishlistView: View {
                     .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
                     }
 
-                    if working {
+                    if shopMode == "check", working {
                         VStack(spacing: 8) {
                             ProgressView("Preparing the item…")
                             Text("After the item is ready, Luna will create 3–5 potential outfits.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.padding()
                     }
-                    if companion.status != .available {
+                    if shopMode == "check", companion.status != .available {
                         Text("Pair with the Mac companion in Settings to analyze a possible purchase.").font(.caption).foregroundStyle(.secondary)
                     }
-                    if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
+                    if shopMode == "check", let error { Text(error).foregroundStyle(.red).font(.subheadline) }
 
+                    if shopOnly || shopMode == "discover" {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
@@ -157,7 +173,13 @@ struct WishlistView: View {
                         }
                         LazyVStack(spacing: 14) {
                             ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }) { product in
-                                ShopProductCard(product: product, test: { Task { await test(product) } }, dismiss: { dismiss(product, from: feed) })
+                                ShopProductCard(
+                                    product: product,
+                                    test: { Task { await test(product) } },
+                                    dismiss: { dismiss(product, from: feed) },
+                                    save: { Task { await save(product, from: feed) } },
+                                    isSaving: savingProductIDs.contains(product.id)
+                                )
                             }
                         }
                         if activeFeed?.id == feed.id {
@@ -168,15 +190,19 @@ struct WishlistView: View {
                         EmptyState(icon: "bag.badge.plus", title: "No shop picks yet", message: "Pair the Mac and search for a piece, or refresh for recommendations based on your style profile.")
                             .frame(minHeight: 180)
                     }
+                    }
 
                 }.padding()
             }
             .refreshable { await startShopSearch(forcePersonalized: true) }
         }
-        .toolbar { if !shopOnly { SettingsButton(isPresented: $showSettings) } }
+        .toolbar { if !shopOnly { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) } }
         .sheet(isPresented: $showShoppingPreferences) {
             if let shoppingProfile { NavigationStack { ShoppingPreferencesView(profile: shoppingProfile) } }
         }
+        .alert("Saved", isPresented: Binding(get: { saveNotice != nil }, set: { if !$0 { saveNotice = nil } })) {
+            Button("OK") { saveNotice = nil }
+        } message: { Text(saveNotice ?? "") }
         .onChange(of: photo) { _, item in
             guard let item else { return }
             Task {
@@ -376,6 +402,31 @@ struct WishlistView: View {
         try? context.save()
     }
 
+    @MainActor private func save(_ product: DiscoveredProductDTO, from feed: ShopFeedSnapshot) async {
+        guard !savingProductIDs.contains(product.id) else { return }
+        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+            dismiss(product, from: feed)
+            saveNotice = "This product was already in Saved."
+            return
+        }
+        savingProductIDs.insert(product.id)
+        defer { savingProductIDs.remove(product.id) }
+        do {
+            let data = try await ImportService.image(from: product.imageURL).0
+            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
+            let category = GarmentCategory(rawValue: product.category) ?? .tops
+            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
+            context.insert(WishlistItem(
+                label: product.title, category: category, color: product.colors.first ?? "",
+                details: "Saved from \(product.retailer). \(price).", sourceAssetName: assetName,
+                catalogAssetName: assetName, sourceURL: product.canonicalURL, fingerprint: "shop:\(product.id)"
+            ))
+            dismiss(product, from: feed)
+            try context.save()
+            saveNotice = "Saved under Saved products."
+        } catch { saveNotice = "This product couldn't be saved: \(error.localizedDescription)" }
+    }
+
     private func test(_ product: DiscoveredProductDTO) async {
         working = true; error = nil
         do {
@@ -388,6 +439,8 @@ struct WishlistView: View {
 
 struct SavedItemsView: View {
     @Binding var showSettings: Bool
+    @Binding var showActivity: Bool
+    var activityCount: Int
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query(sort: \WishlistItem.createdAt, order: .reverse) private var candidates: [WishlistItem]
@@ -398,6 +451,7 @@ struct SavedItemsView: View {
     @State private var newNeed = ""
     @State private var recommending = false
     @State private var error: String?
+    @State private var savedMode = "products"
 
     private var activeNeeds: [PurchaseNeed] { needs.filter { !$0.isCompleted } }
 
@@ -407,9 +461,14 @@ struct SavedItemsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     EditorialHeader(
-                        eyebrow: "Saved for later", title: "Wishlist",
+                        eyebrow: "Saved for later", title: "Saved",
                         subtitle: "Keep broad wardrobe needs separate from specific products you're considering."
                     )
+                    Picker("Saved section", selection: $savedMode) {
+                        Label("Products", systemImage: "heart").tag("products")
+                        Label("Lookout", systemImage: "binoculars").tag("lookout")
+                    }.pickerStyle(.segmented)
+                    if savedMode == "lookout" {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("On the lookout").font(.title2.bold())
                         Text("Save a general need—like capris—and Luna will remember it when finding specific pieces.")
@@ -435,20 +494,23 @@ struct SavedItemsView: View {
                         }
                     }
                     .padding(20).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
+                    }
 
-                    Text("Specific items").font(.title2.bold())
+                    if savedMode == "products" {
+                    Text("Saved products").font(.title2.bold())
                     if candidates.isEmpty {
-                        EmptyState(icon: "heart", title: "No saved products", message: "Use Should I buy this? in Shop to save and test a specific item.")
+                        EmptyState(icon: "heart", title: "No saved products", message: "Save a recommendation in Shop or check a product you're considering.")
                             .frame(minHeight: 180)
                     } else {
                         ForEach(candidates) { item in
                             NavigationLink { WishlistDetailView(item: item) } label: { WishlistRow(item: item) }.buttonStyle(.plain)
                         }
                     }
+                    }
                 }.padding()
             }
         }
-        .toolbar { SettingsButton(isPresented: $showSettings) }
+        .toolbar { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
     }
 
     private var trimmedNeed: String { newNeed.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -472,7 +534,7 @@ struct SavedItemsView: View {
             }
             if !need.rationale.isEmpty { Text(need.rationale).font(.subheadline).foregroundStyle(.secondary) }
             NavigationLink {
-                WishlistView(showSettings: $showSettings, initialQuery: need.searchQuery, autoSearch: true)
+                WishlistView(showSettings: $showSettings, showActivity: $showActivity, activityCount: activityCount, initialQuery: need.searchQuery, autoSearch: true)
             } label: {
                 Label("Find specific pieces", systemImage: "magnifyingglass")
             }.buttonStyle(.borderedProminent)

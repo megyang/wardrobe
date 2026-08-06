@@ -22,7 +22,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section { EditorialHeader(eyebrow: "Private local AI", title: "Mac companion", subtitle: "AI actions reuse your Mac's ChatGPT-backed Codex login. There is no API key in the app.") }
+            Section {
+                EditorialHeader(eyebrow: "Private local AI", title: "Mac companion", subtitle: "Luna uses your Mac's ChatGPT-backed Codex login. There is no API key in the app.", compact: true)
+                LabeledContent("Connection") {
+                    StatusPill(text: companion.status.label, color: companion.status == .available ? WearwellTheme.sage : WearwellTheme.coral)
+                }
+            }
             Section("Local data protection") {
                 LabeledContent("Status") {
                     StatusPill(
@@ -101,11 +106,13 @@ struct SettingsView: View {
                 Button { Task { await pair() } } label: { HStack { Spacer(); if pairing { ProgressView() } else { Label("Pair securely", systemImage: "lock.shield") }; Spacer() } }.disabled(host.isEmpty || code.count != 6 || pairing)
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            Section("How to connect") {
-                Text("1. On the Mac, run `codex login` and choose ChatGPT sign-in.")
-                Text("2. In the Companion folder, run `npm install` and `npm start`.")
-                Text("3. Enter the printed code here. The app pins that Mac's local certificate.")
-            }.font(.caption)
+            if !companion.isPaired {
+                Section("How to connect") { connectionInstructions }.font(.caption)
+            } else {
+                Section("Connection help") {
+                    DisclosureGroup("Show setup instructions") { connectionInstructions }
+                }.font(.caption)
+            }
             Section("Privacy") {
                 Text("Only images you explicitly select are sent for an AI action. The companion deletes request uploads after each job. Generated images are approximate.")
                 Button("Revoke this pairing", role: .destructive) { companion.revoke() }
@@ -143,6 +150,12 @@ struct SettingsView: View {
             case .failure(let error): self.error = error.localizedDescription
             }
         }
+    }
+
+    @ViewBuilder private var connectionInstructions: some View {
+        Text("1. On the Mac, run `codex login` and choose ChatGPT sign-in.")
+        Text("2. In the Companion folder, run `npm install` and `npm start`.")
+        Text("3. Enter the printed code here. The app pins that Mac's local certificate.")
     }
     private func pair() async {
         pairing = true; error = nil; companion.configure(host: host, port: Int(port) ?? 8791)

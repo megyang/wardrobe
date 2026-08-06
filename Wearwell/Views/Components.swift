@@ -31,11 +31,12 @@ struct EditorialHeader: View {
     let eyebrow: String
     let title: String
     let subtitle: String
+    var compact = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(eyebrow.uppercased()).font(.caption2.weight(.bold)).tracking(1.6).foregroundStyle(WearwellTheme.sage)
-            Text(title).font(.system(size: 35, weight: .semibold, design: .serif)).foregroundStyle(WearwellTheme.ink)
-            Text(subtitle).font(.subheadline).foregroundStyle(WearwellTheme.muted)
+            Text(title).font(.system(size: compact ? 29 : 35, weight: .semibold, design: .serif)).foregroundStyle(WearwellTheme.ink)
+            Text(subtitle).font(compact ? .caption : .subheadline).foregroundStyle(WearwellTheme.muted).lineLimit(compact ? 2 : nil)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

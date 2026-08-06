@@ -98,6 +98,23 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(trip.packedGarmentIDs, [retained])
     }
 
+    func testActivityRetentionKeepsActiveAndUnreadWork() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let eightDaysAgo = now.addingTimeInterval(-8 * 24 * 60 * 60)
+
+        XCTAssertTrue(ActivityEntryBuilder.shouldInclude(state: .active, date: eightDaysAgo, isUnread: false, now: now))
+        XCTAssertTrue(ActivityEntryBuilder.shouldInclude(state: .complete, date: eightDaysAgo, isUnread: true, now: now))
+        XCTAssertFalse(ActivityEntryBuilder.shouldInclude(state: .complete, date: eightDaysAgo, isUnread: false, now: now))
+        XCTAssertTrue(ActivityEntryBuilder.shouldInclude(state: .failed, date: now.addingTimeInterval(-60), isUnread: false, now: now))
+    }
+
+    func testActivityStateNormalization() {
+        XCTAssertEqual(ActivityEntryBuilder.normalized("processing"), .active)
+        XCTAssertEqual(ActivityEntryBuilder.normalized("analyzing"), .active)
+        XCTAssertEqual(ActivityEntryBuilder.normalized("failed"), .failed)
+        XCTAssertEqual(ActivityEntryBuilder.normalized("ready"), .complete)
+    }
+
     @MainActor
     func testV3StoreMigratesToV4AndAcceptsPackingTrips() throws {
         let storeURL = FileManager.default.temporaryDirectory.appending(path: "WearwellMigration-\(UUID().uuidString).store")
@@ -121,6 +138,34 @@ final class WearwellTests: XCTestCase {
             container.mainContext.insert(PackingTrip(title: "New trip", startDate: .now, endDate: .now))
             try container.mainContext.save()
             XCTAssertEqual(try container.mainContext.fetch(FetchDescriptor<PackingTrip>()).count, 1)
+        }
+    }
+
+    @MainActor
+    func testV5StoreMigratesToV6WithUnreadMetadataDefaults() throws {
+        let storeURL = FileManager.default.temporaryDirectory.appending(path: "WearwellActivityMigration-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV5.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            container.mainContext.insert(Garment(label: "Existing shirt", category: .tops, color: "Blue"))
+            container.mainContext.insert(InspirationLook(assetName: "look.jpg"))
+            try container.mainContext.save()
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV6.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let garment = try XCTUnwrap(container.mainContext.fetch(FetchDescriptor<Garment>()).first)
+            let inspiration = try XCTUnwrap(container.mainContext.fetch(FetchDescriptor<InspirationLook>()).first)
+            XCTAssertNil(garment.imageRegenerationUpdatedAt)
+            XCTAssertFalse(garment.isUnreadImageRegeneration)
+            XCTAssertFalse(inspiration.isUnreadAnalysis)
         }
     }
 
@@ -637,7 +682,7 @@ final class WearwellTests: XCTestCase {
 
     @MainActor
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: WearwellSchemaV4.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

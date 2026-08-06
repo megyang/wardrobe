@@ -87,7 +87,6 @@ struct AddClothesView: View {
                 .scrollDismissesKeyboard(.interactively)
             }
         }
-        .toolbar { SettingsButton(isPresented: $showSettings) }
         .onChange(of: pickerItems) { _, items in Task { await importItems(items) } }
         .sheet(isPresented: $showPhotoPreflight, onDismiss: { stagedPhotos = [] }) {
             PhotoImportPreflight(photos: $stagedPhotos, mode: stagedImportMode) {

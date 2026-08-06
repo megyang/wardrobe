@@ -4,6 +4,8 @@ import SwiftUI
 
 struct InspirationView: View {
     @Binding var showSettings: Bool
+    @Binding var showActivity: Bool
+    var activityCount: Int
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query(sort: \InspirationLook.createdAt, order: .reverse) private var looks: [InspirationLook]
@@ -23,7 +25,8 @@ struct InspirationView: View {
                     EditorialHeader(
                         eyebrow: "Teach Luna your taste",
                         title: "Inspiration",
-                        subtitle: "Add Pinterest screenshots or looks you love. Each image is analyzed once, then remembered in your private style profile."
+                        subtitle: "Add Pinterest screenshots or looks you love. Each image is analyzed once, then remembered in your private style profile.",
+                        compact: !looks.isEmpty
                     )
 
                     PhotosPicker(selection: $pickerItems, maxSelectionCount: 12, matching: .images) {
@@ -84,7 +87,11 @@ struct InspirationView: View {
                 }.padding()
             }
         }
-        .toolbar { SettingsButton(isPresented: $showSettings) }
+        .toolbar { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) }
+        .onAppear {
+            for look in looks where look.isUnreadAnalysis { look.isUnreadAnalysis = false }
+            try? context.save()
+        }
         .safeAreaInset(edge: .bottom) {
             if showsRetryControls {
                 Button {
@@ -193,6 +200,7 @@ struct InspirationView: View {
             let data = try await AssetStore.shared.data(named: look.assetName)
             look.analysis = try await companion.analyzeInspiration(imageData: data)
             look.state = "ready"; look.errorMessage = nil; look.updatedAt = .now
+            look.isUnreadAnalysis = false
             try context.save()
             let currentLooks = looks.contains { $0.id == look.id } ? looks : looks + [look]
             _ = try StylePreferenceCache.refresh(looks: currentLooks, context: context)
@@ -204,6 +212,7 @@ struct InspirationView: View {
                 look.errorMessage = error.localizedDescription
             }
             look.updatedAt = .now
+            look.isUnreadAnalysis = false
             try? context.save()
         }
     }
