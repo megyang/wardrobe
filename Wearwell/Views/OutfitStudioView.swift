@@ -7,8 +7,11 @@ struct OutfitStudioView: View {
     @Query(sort: \Outfit.updatedAt, order: .reverse) private var outfits: [Outfit]
     @Query private var garments: [Garment]
     @Query private var candidates: [WishlistItem]
+    @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var productFeeds: [ShopFeedSnapshot]
+    @Query(sort: \StyleGeneration.createdAt, order: .reverse) private var studioGenerations: [StyleGeneration]
     @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
     private var savedOutfits: [Outfit] { outfits.filter(\.belongsInOutfitLibrary) }
+    private var outfitProductFeeds: [ShopFeedSnapshot] { productFeeds.filter(\.isOutfitSpecific) }
 
     var body: some View {
         ZStack {
@@ -21,7 +24,45 @@ struct OutfitStudioView: View {
                     }.buttonStyle(.plain)
                     NavigationLink { AIStyleView() } label: {
                         ModeCard(icon: "sparkles", title: "AI Style", detail: "Let AI select owned pieces by ID, then arrange them yourself in the collage editor.", color: WearwellTheme.coral)
-                    }.buttonStyle(.plain)
+                    }
+                    .buttonStyle(.plain)
+                    .overlay(alignment: .topTrailing) { if studioGenerations.contains(where: \.isUnread) { unreadDot } }
+                    if !outfitProductFeeds.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Products for your outfits").font(.title2.bold())
+                            ForEach(outfitProductFeeds.prefix(8)) { feed in
+                                if ["queued", "processing"].contains(feed.state) {
+                                    HStack(spacing: 12) {
+                                        ProgressView()
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("Luna is completing an outfit").font(.headline)
+                                            Text(feed.progressStage ?? "Searching products…").font(.caption).foregroundStyle(.secondary)
+                                            if let seconds = feed.estimatedSecondsRemaining {
+                                                Text("About \(max(1, Int(ceil(Double(seconds) / 60)))) min remaining").font(.caption2).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                                } else if feed.state == "complete", !feed.products.isEmpty {
+                                    NavigationLink { OutfitProductResultsView(feed: feed) } label: {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: "bag.badge.plus").foregroundStyle(WearwellTheme.coral)
+                                                .frame(width: 44, height: 44).background(WearwellTheme.coral.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text("Products for this outfit").font(.headline)
+                                                Text(focusLabel(for: feed)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                                Text("\(feed.products.count) focused recommendation\(feed.products.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            if feed.isUnread { unreadDot }
+                                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                        }
+                                        .padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }.padding(.top, 8)
+                    }
                     if !savedOutfits.isEmpty {
                         HStack(alignment: .center) {
                             Text("Saved outfits").font(.title2.bold())
@@ -56,9 +97,53 @@ struct OutfitStudioView: View {
         }.toolbar { SettingsButton(isPresented: $showSettings) }
     }
 
+    private var unreadDot: some View {
+        Circle().fill(WearwellTheme.coral).frame(width: 10, height: 10).padding(10)
+            .accessibilityLabel("New results")
+    }
+
     private func candidate(for outfit: Outfit) -> WishlistItem? {
         guard let id = outfit.wishlistItemID else { return nil }
         return candidates.first { $0.id == id }
+    }
+
+    private func focusLabel(for feed: ShopFeedSnapshot) -> String {
+        let ids = Set(feed.focusGarmentIDs)
+        let labels = garments.filter { ids.contains($0.id) }.map(\.label)
+        return labels.isEmpty ? "Exact collage pieces" : labels.joined(separator: " + ")
+    }
+}
+
+private struct OutfitProductResultsView: View {
+    @Bindable var feed: ShopFeedSnapshot
+    @Environment(\.modelContext) private var context
+    @Query private var garments: [Garment]
+
+    private var focusLabel: String {
+        let ids = Set(feed.focusGarmentIDs)
+        let labels = garments.filter { ids.contains($0.id) }.map(\.label)
+        return labels.isEmpty ? "the saved collage" : labels.joined(separator: " + ")
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                EditorialHeader(
+                    eyebrow: "For this exact outfit", title: "Luna's product picks",
+                    subtitle: "Selected specifically for \(focusLabel), to fill missing roles rather than repeat what is already there."
+                )
+                ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }.prefix(6)) { product in
+                    ShopProductCard(product: product, test: nil, dismiss: { dismiss(product) })
+                }
+            }.padding()
+        }
+        .background(WearwellTheme.cream.ignoresSafeArea())
+        .onAppear { feed.isUnread = false; try? context.save() }
+    }
+
+    private func dismiss(_ product: DiscoveredProductDTO) {
+        var dismissed = feed.dismissedIDs; dismissed.insert(product.id); feed.dismissedIDs = dismissed
+        try? context.save()
     }
 }
 
@@ -194,6 +279,8 @@ struct AIStyleView: View {
         }
         .navigationTitle("AI Style").navigationBarTitleDisplayMode(.inline)
         .task {
+            for generation in generations where generation.isUnread { generation.isUnread = false }
+            try? context.save()
             refreshFeedback()
             if suggestions.isEmpty, let latest = generations.first(where: { $0.state == "complete" }) {
                 suggestions = latest.suggestions
@@ -266,6 +353,7 @@ struct AIStyleView: View {
             generation.suggestions = valid
             suggestions = valid
             if valid.isEmpty { error = "Luna couldn't create a valid outfit from the current wardrobe." }
+            if job.state == "complete" { generation.isUnread = false }
         } else if job.state == "failed" {
             error = job.error
         }

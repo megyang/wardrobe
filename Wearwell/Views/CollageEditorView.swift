@@ -10,6 +10,8 @@ struct CollageEditorView: View {
     let wishlistItem: WishlistItem?
 
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
+    @Query private var styleProfiles: [StyleProfile]
+    @Query private var inspirations: [InspirationLook]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -66,6 +68,15 @@ struct CollageEditorView: View {
                                     .onTapGesture { selectedID = item.id }
                             }
                         }
+                    }
+                    if recommending {
+                        HStack(spacing: 9) {
+                            ProgressView()
+                            Text("Luna is matching your closet… this may take about a minute.")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(11).background(.ultraThinMaterial, in: Capsule())
+                        .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 24)).padding(.horizontal)
@@ -324,7 +335,8 @@ struct CollageEditorView: View {
         do {
             let result = try await companion.recommendItems(
                 garments: garments, selectedGarmentIDs: selectedIDs,
-                category: category, subcategory: subcategory
+                category: category, subcategory: subcategory,
+                styleProfile: styleProfiles.first, inspirations: inspirations
             )
             let additions = result.garmentIDs.compactMap { id in eligible.first { $0.id == id } }
             guard additions.count == result.garmentIDs.count else { throw ClientError.invalidResponse }

@@ -6,6 +6,7 @@ import UIKit
 struct WardrobeView: View {
     @Binding var showSettings: Bool
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
+    @Query private var importDrafts: [ImportDraft]
     @Environment(\.modelContext) private var context
     @State private var search = ""
     @State private var category: GarmentCategory?
@@ -54,7 +55,13 @@ struct WardrobeView: View {
         .searchable(text: $search, prompt: "Search clothes")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { showAdd = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add clothes")
+                Button { showAdd = true } label: {
+                    Image(systemName: "plus").overlay(alignment: .topTrailing) {
+                        if importDrafts.contains(where: \.isUnread) {
+                            Circle().fill(WearwellTheme.coral).frame(width: 7, height: 7).offset(x: 4, y: -3)
+                        }
+                    }
+                }.accessibilityLabel("Add clothes")
             }
             ToolbarItem(placement: .topBarTrailing) { SettingsButton(isPresented: $showSettings) }
         }

@@ -265,7 +265,10 @@ final class CompanionClient: ObservableObject {
         return OutfitValidator.validateAI(decoded.outfits, garments: garments, anchorID: anchorID)
     }
 
-    func recommendItems(garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory? = nil, subcategory: GarmentSubcategory? = nil) async throws -> ItemRecommendationDTO {
+    func recommendItems(
+        garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory? = nil,
+        subcategory: GarmentSubcategory? = nil, styleProfile: StyleProfile?, inspirations: [InspirationLook]
+    ) async throws -> ItemRecommendationDTO {
         status = .busy; defer { status = .available }
         let selected = Set(selectedGarmentIDs)
         let matches: (Garment) -> Bool = { (category == nil || $0.category == category) && (subcategory == nil || $0.subcategory == subcategory) }
@@ -273,9 +276,17 @@ final class CompanionClient: ObservableObject {
         let visuals = await visualReferences(relevant.map {
             VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
         }, byteBudget: 11 * 1024 * 1024)
+        let selectedSummary = garments.filter { selected.contains($0.id) }.map { "\($0.color) \($0.label)" }.joined(separator: " ")
+        let examples = StylePreferenceCache.relevantLooks(inspirations, query: selectedSummary, limit: 6).compactMap(InspirationExample.init)
+        let exampleIDs = Set(examples.map(\.id))
         let payload = ItemRecommendationRequest(
             wardrobe: garments.map(GarmentSummary.init), selectedGarmentIDs: selectedGarmentIDs,
-            category: category?.rawValue ?? "", subcategory: subcategory?.rawValue, garmentVisuals: visuals
+            category: category?.rawValue ?? "", subcategory: subcategory?.rawValue,
+            styleProfile: styleProfile?.profile, inspirationExamples: examples,
+            garmentVisuals: visuals,
+            inspirationVisuals: await visualReferences(inspirations.filter { exampleIDs.contains($0.id) }.map {
+                VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
+            }, byteBudget: 3 * 1024 * 1024)
         )
         let data = try await send(path: "v1/recommend-item", body: payload)
         let result = try JSONDecoder().decode(ItemRecommendationDTO.self, from: data)
@@ -391,7 +402,7 @@ final class CompanionClient: ObservableObject {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             status = .available
         }
-        let readyInspirations = inspirations.filter { $0.state == "ready" && $0.analysis != nil }
+        let readyInspirations = StylePreferenceCache.relevantLooks(inspirations, query: query, limit: 8)
         let payload = ShopDiscoveryRequest(
             query: query,
             retailerDomains: shoppingProfile.retailerDomains,
@@ -707,7 +718,9 @@ private struct ItemRecommendationRequest: Codable {
     let selectedGarmentIDs: [UUID]
     let category: String
     let subcategory: String?
-    let garmentVisuals: [VisualReference]
+    let styleProfile: StyleProfileDTO?
+    let inspirationExamples: [InspirationExample]
+    let garmentVisuals, inspirationVisuals: [VisualReference]
 }
 struct ItemRecommendationDTO: Codable, Equatable {
     let garmentIDs: [UUID]

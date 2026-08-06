@@ -88,6 +88,8 @@ struct AddClothesView: View {
         }
         .sheet(isPresented: $showCamera) { CameraPicker { image in showCamera = false; guard let data = image.jpegData(compressionQuality: 0.9) else { return }; Task { await analyze(data: data, sourceURL: nil) } } }
         .task {
+            for draft in drafts where draft.isUnread { draft.isUnread = false }
+            try? context.save()
             await consumeShareInbox()
             while !Task.isCancelled {
                 await refreshDrafts()

@@ -212,6 +212,12 @@ struct WardrobeGapResponseDTO: Codable, Equatable {
     var jobID: String?
     var state: String
     var errorMessage: String?
+    var originContext: String = "wardrobe"
+    var focusGarmentIDsJSON: Data = Data()
+    var isUnread: Bool = false
+    var progressStage: String?
+    var estimatedSecondsRemaining: Int?
+    var progressUpdatedAt: Date?
 
     var products: [DiscoveredProductDTO] {
         get { (try? JSONDecoder().decode([DiscoveredProductDTO].self, from: productsJSON)) ?? [] }
@@ -225,15 +231,25 @@ struct WardrobeGapResponseDTO: Codable, Equatable {
 
     var isFresh: Bool { state == "complete" && expiresAt > .now }
 
+    var focusGarmentIDs: [UUID] {
+        get { (try? JSONDecoder().decode([UUID].self, from: focusGarmentIDsJSON)) ?? [] }
+        set { focusGarmentIDsJSON = (try? JSONEncoder().encode(newValue)) ?? Data() }
+    }
+
+    var isOutfitSpecific: Bool { originContext == "outfit" }
+
     init(
         id: UUID = UUID(), query: String, products: [DiscoveredProductDTO] = [],
         generatedAt: Date = .now, expiresAt: Date = .now.addingTimeInterval(6 * 60 * 60),
-        jobID: String? = nil, state: String = "queued", errorMessage: String? = nil
+        jobID: String? = nil, state: String = "queued", errorMessage: String? = nil,
+        originContext: String = "wardrobe", focusGarmentIDs: [UUID] = []
     ) {
         self.id = id; self.query = query
         productsJSON = (try? JSONEncoder().encode(products)) ?? Data()
         dismissedIDsJSON = Data()
         self.generatedAt = generatedAt; self.expiresAt = expiresAt
         self.jobID = jobID; self.state = state; self.errorMessage = errorMessage
+        self.originContext = originContext
+        focusGarmentIDsJSON = (try? JSONEncoder().encode(focusGarmentIDs)) ?? Data()
     }
 }

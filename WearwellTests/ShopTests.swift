@@ -91,6 +91,14 @@ final class ShopTests: XCTestCase {
         XCTAssertFalse(need.isCompleted)
     }
 
+    func testOutfitProductFeedRemembersItsExactCollage() {
+        let ids = [UUID(), UUID()]
+        let feed = ShopFeedSnapshot(query: "Complete this outfit", originContext: "outfit", focusGarmentIDs: ids)
+        XCTAssertTrue(feed.isOutfitSpecific)
+        XCTAssertEqual(feed.focusGarmentIDs, ids)
+        XCTAssertFalse(feed.isUnread)
+    }
+
     func testOldCachedProductDecodesWithoutVisualProvenance() throws {
         let json = #"{"id":"old","canonicalURL":"https://example.com/p","retailer":"Example","domain":"example.com","title":"Top","imageURL":"https://example.com/p.jpg","category":"tops","colors":[],"currentPrice":40,"originalPrice":null,"currency":"USD","verifiedAt":"2026-08-05T12:00:00Z","confidence":0.8,"rationale":"Useful","matchedWardrobeGap":"layer"}"#.data(using: .utf8)!
         let product = try JSONDecoder().decode(DiscoveredProductDTO.self, from: json)

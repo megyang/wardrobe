@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ShopProductCard: View {
     let product: DiscoveredProductDTO
-    let test: () -> Void
+    let test: (() -> Void)?
     let dismiss: () -> Void
     @Environment(\.openURL) private var openURL
 
@@ -28,7 +28,7 @@ struct ShopProductCard: View {
             price
             if !product.rationale.isEmpty { Text(product.rationale).font(.subheadline).foregroundStyle(.secondary) }
             HStack {
-                Button("Test with my wardrobe", action: test).buttonStyle(.borderedProminent)
+                if let test { Button("Test with my wardrobe", action: test).buttonStyle(.borderedProminent) }
                 Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: { Image(systemName: "safari") }
                     .buttonStyle(.bordered).accessibilityLabel("View at retailer")
                 Spacer()

@@ -43,10 +43,17 @@ struct WishlistView: View {
     }
 
     private var shoppingProfile: ShoppingProfile? { shoppingProfiles.first }
-    private var activeFeed: ShopFeedSnapshot? { feedSnapshots.first { ["queued", "processing"].contains($0.state) } }
-    private var latestFeed: ShopFeedSnapshot? { feedSnapshots.first { $0.state == "complete" } }
+    private var relevantFeeds: [ShopFeedSnapshot] {
+        if shopOnly {
+            return feedSnapshots.filter { $0.isOutfitSpecific && $0.query == initialQuery }
+        }
+        return feedSnapshots.filter { !$0.isOutfitSpecific }
+    }
+    private var activeFeed: ShopFeedSnapshot? { relevantFeeds.first { ["queued", "processing"].contains($0.state) } }
+    private var latestFeed: ShopFeedSnapshot? { relevantFeeds.first { $0.state == "complete" } }
     private var displayedFeed: ShopFeedSnapshot? {
         if let activeFeed, !activeFeed.products.isEmpty { return activeFeed }
+        if shopOnly, activeFeed != nil { return nil }
         return latestFeed
     }
 
@@ -185,6 +192,10 @@ struct WishlistView: View {
             if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: true) }
         }
         .task {
+            if !shopOnly {
+                for feed in relevantFeeds where feed.isUnread { feed.isUnread = false }
+                try? context.save()
+            }
             let profile = ensureShoppingProfile()
             guard !didAutoRefresh else { return }
             didAutoRefresh = true
@@ -288,7 +299,10 @@ struct WishlistView: View {
             ? "Personalized pieces that add value to my wardrobe, prioritizing useful verified markdowns"
             : shopQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         shopWorking = true; shopError = nil
-        let snapshot = ShopFeedSnapshot(query: query)
+        let snapshot = ShopFeedSnapshot(
+            query: query, originContext: shopOnly ? "outfit" : "wardrobe",
+            focusGarmentIDs: focusGarmentIDs
+        )
         context.insert(snapshot); try? context.save()
         shopStage = "Starting Luna's product search"
         shopEstimateSeconds = 120
@@ -301,6 +315,9 @@ struct WishlistView: View {
             )
             snapshot.jobID = job.id; snapshot.state = job.state
             updateProgress(from: job)
+            snapshot.progressStage = shopStage
+            snapshot.estimatedSecondsRemaining = shopEstimateSeconds
+            snapshot.progressUpdatedAt = shopEstimateUpdatedAt
             try context.save()
         } catch {
             snapshot.state = "failed"; snapshot.errorMessage = error.localizedDescription
@@ -315,6 +332,9 @@ struct WishlistView: View {
             let job = try await companion.shopDiscoveryJob(id: id)
             snapshot.state = job.state; snapshot.errorMessage = job.error
             updateProgress(from: job)
+            snapshot.progressStage = shopStage
+            snapshot.estimatedSecondsRemaining = shopEstimateSeconds
+            snapshot.progressUpdatedAt = shopEstimateUpdatedAt
             if let feed = job.result {
                 let dismissed = shoppingProfile?.preferences.dismissedProductIDs ?? []
                 snapshot.query = feed.query
@@ -323,6 +343,7 @@ struct WishlistView: View {
                 snapshot.expiresAt = snapshot.generatedAt.addingTimeInterval(6 * 60 * 60)
                 if job.state == "complete" || (job.state == "failed" && !feed.products.isEmpty) {
                     snapshot.state = "complete"
+                    snapshot.isUnread = false
                     if job.state == "failed" {
                         shopError = job.error ?? "Some later recommendations could not be prepared. Showing the completed pages."
                     }
@@ -613,6 +634,7 @@ struct WishlistDetailView: View {
                 Button("Delete candidate", role: .destructive) { confirmDelete = true }.frame(maxWidth: .infinity)
             }.padding()
         }.background(WearwellTheme.cream).navigationBarTitleDisplayMode(.inline)
+        .onAppear { item.isUnreadAssessment = false; try? context.save() }
         .task {
             if autoAssess, assessment == nil, item.verdict == nil, item.assessmentJobID == nil, !working { await assess() }
             while !Task.isCancelled {
@@ -747,6 +769,7 @@ struct WishlistDetailView: View {
 
     private func apply(_ job: AssessmentJobDTO) {
         assessment = PurchaseAssessmentResults.apply(job, to: item, garments: garments, outfits: outfits, context: context)
+        if job.state == "complete" { item.isUnreadAssessment = false }
     }
     private func purchaseLayout(for suggestion: OutfitSuggestionDTO) -> [LayoutItem] {
         PurchaseAssessmentResults.layout(for: suggestion, candidateID: item.id)

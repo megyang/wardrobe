@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendStableProducts, audienceConstrainedQuery, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -35,4 +35,19 @@ test("audience preference supports women's, unisex, and men's clothing", () => {
   assert.equal(allowsShoppingAudience(mens, { clothingAudience: "men" }), true);
   assert.equal(allowsShoppingAudience(womens, { clothingAudience: "men" }), false);
   assert.match(audienceConstrainedQuery("linen shirt", { clothingAudience: "men" }), /men's clothing/i);
+});
+
+test("focused outfit shopping fills missing roles instead of duplicating occupied slots", () => {
+  const wardrobe = [
+    { id: "top", category: "tops" },
+    { id: "bottom", category: "bottoms" },
+    { id: "shoes", category: "shoes" }
+  ];
+  const focus = ["top", "bottom", "shoes"];
+  assert.equal(canCompleteFocusedOutfit({ title: "Wide leg pants", category: "bottoms" }, wardrobe, focus), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Leather loafers", category: "shoes" }, wardrobe, focus), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Sheer layering turtleneck", category: "tops" }, wardrobe, focus), true);
+  assert.equal(canCompleteFocusedOutfit({ title: "Graphic tee", category: "tops" }, wardrobe, focus), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Patterned tights", category: "accessories" }, wardrobe, focus), true);
+  assert.equal(canCompleteFocusedOutfit({ title: "Wool coat", category: "outerwear" }, wardrobe, focus), true);
 });

@@ -31,10 +31,15 @@ enum WearwellSchemaV3: VersionedSchema {
     ]
 }
 
+enum WearwellSchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+    static let models: [any PersistentModel.Type] = WearwellSchemaV3.models
+}
+
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV3.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV4.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,

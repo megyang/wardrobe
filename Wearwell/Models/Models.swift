@@ -225,6 +225,7 @@ enum OutfitLayout {
     var assessmentStage: String?
     var assessmentEstimatedSecondsRemaining: Int?
     var assessmentError: String?
+    var isUnreadAssessment: Bool = false
 
     var category: GarmentCategory {
         get { GarmentCategory(rawValue: categoryRaw) ?? .tops }
@@ -261,6 +262,7 @@ enum OutfitLayout {
     var errorMessage: String?
     var createdAt: Date
     var updatedAt: Date
+    var isUnread: Bool = false
 
     var suggestions: [OutfitSuggestionDTO] {
         get { (try? JSONDecoder().decode([OutfitSuggestionDTO].self, from: resultJSON)) ?? [] }
@@ -471,6 +473,7 @@ struct StyleProfileDTO: Codable, Equatable {
     var progressTotal: Int?
     var queuePosition: Int?
     var estimatedSecondsRemaining: Int?
+    var isUnread: Bool = false
 
     var analyses: [GarmentAnalysisDTO] {
         get { resultJSON.flatMap { try? JSONDecoder().decode([GarmentAnalysisDTO].self, from: $0) } ?? [] }
