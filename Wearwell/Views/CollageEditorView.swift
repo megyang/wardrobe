@@ -312,8 +312,17 @@ struct CollageEditorView: View {
             recommendationNotice = "Add at least one wardrobe piece before asking Luna what to buy for this outfit."
             return
         }
-        let description = selected.map { "\($0.color) \($0.label) (\($0.subcategory?.title ?? $0.category.title))" }.joined(separator: ", ")
-        outfitShopQuery = "Find 2–6 specific products to complete this exact outfit: \(description). Prioritize the missing role, proportion, layer, shoe, or accessory that makes these pictured pieces work together."
+        let description = selected.map { "\($0.color) \($0.label) [saved category: \($0.category.rawValue)]" }.joined(separator: ", ")
+        let categories = Set(selected.map(\.category))
+        let requiredFoundation: String
+        if categories.contains(.tops), !categories.contains(.bottoms), !categories.contains(.dresses) {
+            requiredFoundation = "The saved categories show a top but no bottom, so include one bottom."
+        } else if categories.contains(.bottoms), !categories.contains(.tops), !categories.contains(.dresses) {
+            requiredFoundation = "The saved categories show a bottom but no top, so include one top."
+        } else {
+            requiredFoundation = "Do not duplicate any occupied clothing slot."
+        }
+        outfitShopQuery = "Find 2–6 specific products to complete this exact outfit: \(description). Saved categories are authoritative even if a picture could be interpreted differently. \(requiredFoundation) Use at most one recommendation for each top, bottom, dress, outerwear, or shoe slot; prioritize useful layers and accessories for the remaining suggestions."
         showShopRecommendations = true
     }
     private func recommend(category: GarmentCategory?, subcategory: GarmentSubcategory?) async {

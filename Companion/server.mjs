@@ -21,7 +21,7 @@ import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
 import { BUNDLED_RETAILERS, UCP_RETAILERS, fetchProductImage, normalizeDomain } from "./shop-discovery.mjs";
 import { createLiveWebShopProvider } from "./shop-provider.mjs";
 import { createUCPShopProvider } from "./ucp-provider.mjs";
-import { appendStableProducts, canCompleteFocusedOutfit, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
+import { appendFocusedComplements, appendStableProducts, canCompleteFocusedOutfit, focusedOutfitRoleState, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -457,6 +457,7 @@ async function materializeProductImages(products, signal, imageOffset = 0) {
 
 async function rankShopWave(body, query, wave, published, evidence, signal, workerIndex) {
   const focused = (body.focusGarmentIDs || []).length > 0;
+  const roleState = focused ? focusedOutfitRoleState(body.wardrobe, body.focusGarmentIDs) : null;
   if (focused) wave = wave.filter(product => canCompleteFocusedOutfit(product, body.wardrobe, body.focusGarmentIDs));
   if (!wave.length) return [];
   const visuals = await materializeProductImages(wave, signal, evidence.files.length);
@@ -487,6 +488,9 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       (body.focusGarmentIDs || []).length
         ? `This is an outfit-specific request. Judge each product primarily by how well it completes the exact owned garment IDs ${JSON.stringify(body.focusGarmentIDs)}; return actual products, not general wardrobe-gap advice.`
         : "This is a wardrobe-level product search; prefer pieces that work across several owned garments.",
+      focused
+        ? `The user's saved wardrobe categories are authoritative and must override any visual or label-based guess. Exact occupied roles: ${JSON.stringify([...roleState.occupied])}. ${roleState.missingFoundation ? `The outfit is missing its foundation role: ${roleState.missingFoundation}; include the strongest one.` : "Its top/bottom foundation is already represented."} Never reinterpret an item saved as tops as a dress, even if it is long or described as a dress top.`
+        : "Use saved wardrobe categories as authoritative inventory metadata.",
       "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. Keep the rationale candid and specific; visualNotes should briefly record the decisive visible evidence.",
       `Request: ${query}. Preferences: ${JSON.stringify(body.preferences || {})}.`,
       `Style profile: ${JSON.stringify(body.styleProfile || null)}. Inspiration analyses: ${JSON.stringify(body.inspirationExamples || [])}.`,
@@ -522,7 +526,12 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   if (!domains.length) domains.push(...UCP_RETAILERS.map(item => item.domain));
   const query = String(body.query || "personalized pieces that add value to my wardrobe").trim().slice(0, 500);
   const resultLimit = Math.min(60, Math.max(2, Number(body.resultLimit) || 60));
-  const candidates = await collectShopCandidates(body, query, domains, signal, workerIndex);
+  const focused = (body.focusGarmentIDs || []).length > 0;
+  const roleState = focused ? focusedOutfitRoleState(body.wardrobe, body.focusGarmentIDs) : null;
+  const discoveryQuery = roleState?.missingFoundation
+    ? `${query}. Required missing outfit role based on the user's saved categories: one ${roleState.missingFoundation}. The saved category overrides visual guesses.`
+    : query;
+  const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex);
   if (!candidates.length) throw new Error("No selected store returned verifiable products. Try another request or store.");
   const generatedAt = new Date().toISOString(); const products = [];
   const evidence = await materializeEvidenceBoards(body);
@@ -532,7 +541,8 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
       let ranked;
       try { ranked = await rankShopWave(body, query, wave, products, evidence, signal, workerIndex); }
       catch (error) { if (!products.length) throw error; break; }
-      appendStableProducts(products, ranked, resultLimit);
+      if (focused) appendFocusedComplements(products, ranked, body.wardrobe, body.focusGarmentIDs, resultLimit);
+      else appendStableProducts(products, ranked, resultLimit);
       const completed = Math.min(products.length, resultLimit); const result = { query, generatedAt, products: products.slice(0, resultLimit) };
       await onProgress({
         result, stage: completed < Math.min(resultLimit, candidates.length) ? "Visually ranking more products" : "Finalizing recommendations",
@@ -812,7 +822,10 @@ async function recommendItem(body, signal = null, workerIndex = null) {
     const result = await structured(prompt, visuals.files, itemRecommendationSchema([...eligibleIDs]), signal, workerIndex);
     const uniqueIDs = [...new Set(result.garmentIDs || [])];
     if (!uniqueIDs.length || uniqueIDs.some(id => !eligibleIDs.has(id))) throw new Error("Luna returned an item outside the requested category.");
-    return { ...result, garmentIDs: uniqueIDs.slice(0, 2) };
+    const selectedItems = uniqueIDs.map(id => eligible.find(item => item.id === id)).filter(Boolean);
+    const nonDuplicating = appendFocusedComplements([], selectedItems, wardrobe, selectedIDs, 2);
+    if (!nonDuplicating.length) throw new Error("Luna returned an item that duplicates an occupied outfit role.");
+    return { ...result, garmentIDs: nonDuplicating.map(item => item.id) };
   } finally { await fs.rm(visuals.folder, { recursive: true, force: true }); }
 }
 

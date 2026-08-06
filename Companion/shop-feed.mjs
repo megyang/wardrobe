@@ -57,6 +57,8 @@ export function allowsShoppingAudience(product, preferences) {
 }
 
 export function productRole(product) {
+  const explicitCategory = String(product?.category || "").trim().toLowerCase();
+  if (["tops", "bottoms", "outerwear", "dresses", "shoes", "accessories"].includes(explicitCategory)) return explicitCategory;
   const text = [product?.category, product?.subcategory, product?.title, product?.label, product?.description, product?.details].filter(Boolean).join(" ").toLowerCase();
   if (/\b(?:shoe|shoes|boot|boots|loafer|loafers|sneaker|sneakers|heel|heels|sandal|sandals|flat|flats)\b/.test(text)) return "shoes";
   if (/\b(?:pant|pants|trouser|trousers|jean|jeans|skirt|skirts|short|shorts|capri|capris|legging|leggings)\b/.test(text)) return "bottoms";
@@ -67,9 +69,19 @@ export function productRole(product) {
   return null;
 }
 
-export function canCompleteFocusedOutfit(product, wardrobe, focusGarmentIDs) {
+export function focusedOutfitRoleState(wardrobe, focusGarmentIDs) {
   const focus = new Set((focusGarmentIDs || []).map(String));
-  const occupied = new Set((wardrobe || []).filter(item => focus.has(String(item.id))).map(item => item.category));
+  const occupied = new Set(
+    (wardrobe || []).filter(item => focus.has(String(item.id))).map(productRole).filter(Boolean)
+  );
+  let missingFoundation = null;
+  if (occupied.has("tops") && !occupied.has("bottoms") && !occupied.has("dresses")) missingFoundation = "bottoms";
+  else if (occupied.has("bottoms") && !occupied.has("tops") && !occupied.has("dresses")) missingFoundation = "tops";
+  return { occupied, missingFoundation };
+}
+
+export function canCompleteFocusedOutfit(product, wardrobe, focusGarmentIDs) {
+  const { occupied } = focusedOutfitRoleState(wardrobe, focusGarmentIDs);
   const role = productRole(product);
   if (!role) return true;
   if (["bottoms", "shoes", "dresses", "outerwear"].includes(role) && occupied.has(role)) return false;
@@ -78,4 +90,21 @@ export function canCompleteFocusedOutfit(product, wardrobe, focusGarmentIDs) {
     return /\b(?:layer|layering|under|undershirt|camisole|tank|turtleneck|mesh|sheer|cardigan|vest)\b/.test(text);
   }
   return true;
+}
+
+export function appendFocusedComplements(published, wave, wardrobe, focusGarmentIDs, limit = 6) {
+  const ids = new Set(published.map(item => item.id));
+  const addedRoles = new Set(published.map(productRole).filter(Boolean));
+  const { missingFoundation } = focusedOutfitRoleState(wardrobe, focusGarmentIDs);
+  const ordered = [...wave].sort((left, right) =>
+    Number(productRole(right) === missingFoundation) - Number(productRole(left) === missingFoundation)
+  );
+  for (const item of ordered) {
+    if (published.length >= limit) break;
+    const role = productRole(item);
+    if (ids.has(item.id) || !canCompleteFocusedOutfit(item, wardrobe, focusGarmentIDs)) continue;
+    if (["tops", "bottoms", "outerwear", "dresses", "shoes"].includes(role) && addedRoles.has(role)) continue;
+    ids.add(item.id); if (role) addedRoles.add(role); published.push(item);
+  }
+  return published;
 }

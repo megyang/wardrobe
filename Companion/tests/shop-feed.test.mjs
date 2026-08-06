@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendFocusedComplements, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, focusedOutfitRoleState, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -50,4 +50,18 @@ test("focused outfit shopping fills missing roles instead of duplicating occupie
   assert.equal(canCompleteFocusedOutfit({ title: "Graphic tee", category: "tops" }, wardrobe, focus), false);
   assert.equal(canCompleteFocusedOutfit({ title: "Patterned tights", category: "accessories" }, wardrobe, focus), true);
   assert.equal(canCompleteFocusedOutfit({ title: "Wool coat", category: "outerwear" }, wardrobe, focus), true);
+});
+
+test("saved categories override dress-like labels and focused results use each slot once", () => {
+  const wardrobe = [{ id: "long-top", label: "Dress top", category: "tops" }];
+  assert.equal(productRole(wardrobe[0]), "tops");
+  assert.equal(focusedOutfitRoleState(wardrobe, ["long-top"]).missingFoundation, "bottoms");
+  const result = appendFocusedComplements([], [
+    { id: "skirt-a", title: "Mini skirt", category: "bottoms" },
+    { id: "skirt-b", title: "Midi skirt", category: "bottoms" },
+    { id: "shoe-a", title: "Loafers", category: "shoes" },
+    { id: "shoe-b", title: "Boots", category: "shoes" },
+    { id: "hat", title: "Beret", category: "accessories" }
+  ], wardrobe, ["long-top"], 6);
+  assert.deepEqual(result.map(item => item.id), ["skirt-a", "shoe-a", "hat"]);
 });
