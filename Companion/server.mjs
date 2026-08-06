@@ -22,7 +22,7 @@ import { BackupStore, validateBackupManifest } from "./backup-store.mjs";
 import { BUNDLED_RETAILERS, UCP_RETAILERS, fetchProductImage, normalizeDomain } from "./shop-discovery.mjs";
 import { createLiveWebShopProvider } from "./shop-provider.mjs";
 import { createUCPShopProvider } from "./ucp-provider.mjs";
-import { appendFocusedComplements, appendStableProducts, canCompleteFocusedOutfit, focusedOutfitRoleState, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
+import { appendFocusedComplements, appendStableProducts, canCompleteFocusedOutfit, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -458,8 +458,11 @@ async function materializeProductImages(products, signal, imageOffset = 0) {
 
 async function rankShopWave(body, query, wave, published, evidence, signal, workerIndex) {
   const focused = (body.focusGarmentIDs || []).length > 0;
+  const inspirationFocused = (body.focusInspirationIDs || []).length > 0;
   const roleState = focused ? focusedOutfitRoleState(body.wardrobe, body.focusGarmentIDs) : null;
   if (focused) wave = wave.filter(product => canCompleteFocusedOutfit(product, body.wardrobe, body.focusGarmentIDs));
+  const requestedInspirationRole = inspirationFocused ? inspirationRequestedRole(query) : null;
+  if (requestedInspirationRole) wave = wave.filter(product => productRole(product) === requestedInspirationRole);
   if (!wave.length) return [];
   const visuals = await materializeProductImages(wave, signal, evidence.files.length);
   try {
@@ -488,10 +491,14 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       "Prioritize demonstrated inspiration fit, compatibility with several exact owned garments, a useful wardrobe gap, versatility, shopping constraints, then markdown. Penalize visual duplicates and pieces that only match generic keywords.",
       (body.focusGarmentIDs || []).length
         ? `This is an outfit-specific request. Judge each product primarily by how well it completes the exact owned garment IDs ${JSON.stringify(body.focusGarmentIDs)}; return actual products, not general wardrobe-gap advice.`
-        : "This is a wardrobe-level product search; prefer pieces that work across several owned garments.",
+        : inspirationFocused
+          ? `This is an exact inspiration-photo search. Treat inspiration IDs ${JSON.stringify(body.focusInspirationIDs)} and their attached images as the primary target. Select products because their actual pictures visibly resemble pieces in that look, not because their titles share keywords.`
+          : "This is a wardrobe-level product search; prefer pieces that work across several owned garments.",
       focused
-        ? `The user's saved wardrobe categories are authoritative and must override any visual or label-based guess. Exact occupied roles: ${JSON.stringify([...roleState.occupied])}. ${roleState.missingFoundation ? `The outfit is missing its foundation role: ${roleState.missingFoundation}; include the strongest one.` : "Its top/bottom foundation is already represented."} Never reinterpret an item saved as tops as a dress, even if it is long or described as a dress top.`
-        : "Use saved wardrobe categories as authoritative inventory metadata.",
+        ? `The user's saved wardrobe categories are authoritative and must override any visual or label-based guess. Exact occupied roles: ${JSON.stringify([...roleState.occupied])}. ${roleState.missingFoundation ? `The outfit is missing its foundation role: ${roleState.missingFoundation}; include the strongest one.` : "Its top/bottom foundation is already represented."} HARD REJECTION: do not select any product whose actual role is already occupied, including tops. Do not recommend a replacement top when a top exists. Prefer unoccupied inspiration-supported additions such as accessories, hats, belts, bags, tights, socks, leg warmers, or outer layers. Never reinterpret an item saved as tops as a dress, even if it is long or described as a dress top.`
+        : inspirationFocused
+          ? "Match the requested garment type and the exact inspiration image's silhouette, proportions, construction, palette, texture, and visible details. Reject generic approximations."
+          : "Use saved wardrobe categories as authoritative inventory metadata.",
       "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. Keep the rationale candid and specific; visualNotes should briefly record the decisive visible evidence.",
       `Request: ${query}. Preferences: ${JSON.stringify(body.preferences || {})}.`,
       `Style profile: ${JSON.stringify(body.styleProfile || null)}. Inspiration analyses: ${JSON.stringify(body.inspirationExamples || [])}.`,
@@ -504,8 +511,8 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
     const byID = new Map(wave.map(item => [item.id, item])); const used = new Set(); const products = [];
     for (const selection of ranked.selections || []) {
       const item = byID.get(selection.id); if (!item || used.has(item.id)) continue;
-      const minimumTaste = focused ? 0.62 : 0.56;
-      const minimumWardrobeFit = focused ? 0.62 : 0.52;
+      const minimumTaste = inspirationFocused ? 0.68 : (focused ? 0.62 : 0.56);
+      const minimumWardrobeFit = inspirationFocused ? 0.25 : (focused ? 0.62 : 0.52);
       const maximumDuplication = focused ? 0.36 : 0.48;
       if (selection.tasteFit < minimumTaste || selection.wardrobeFit < minimumWardrobeFit || selection.duplicationRisk > maximumDuplication) continue;
       used.add(item.id);
@@ -528,10 +535,16 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   const query = String(body.query || "personalized pieces that add value to my wardrobe").trim().slice(0, 500);
   const resultLimit = Math.min(60, Math.max(2, Number(body.resultLimit) || 60));
   const focused = (body.focusGarmentIDs || []).length > 0;
+  const inspirationFocused = (body.focusInspirationIDs || []).length > 0;
   const roleState = focused ? focusedOutfitRoleState(body.wardrobe, body.focusGarmentIDs) : null;
-  const discoveryQuery = roleState?.missingFoundation
-    ? `${query}. Required missing outfit role based on the user's saved categories: one ${roleState.missingFoundation}. The saved category overrides visual guesses.`
-    : query;
+  let discoveryQuery = query;
+  if (roleState?.missingFoundation) {
+    discoveryQuery = `${query}. Required missing outfit role based on the user's saved categories: one ${roleState.missingFoundation}. Never return products for occupied roles ${JSON.stringify([...roleState.occupied])}; saved categories override visual guesses.`;
+  } else if (focused) {
+    discoveryQuery = `${query}. The outfit already occupies ${JSON.stringify([...roleState.occupied])}. Do not search for or return those clothing roles. Search for visually specific accessories and unoccupied styling layers that make the owned outfit resemble the inspiration images.`;
+  } else if (inspirationFocused) {
+    discoveryQuery = `${query}. Use the attached exact inspiration image as the visual source of truth; find products with strong visible resemblance rather than generic keyword matches.`;
+  }
   const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex);
   if (!candidates.length) throw new Error("No selected store returned verifiable products. Try another request or store.");
   const generatedAt = new Date().toISOString(); const products = [];

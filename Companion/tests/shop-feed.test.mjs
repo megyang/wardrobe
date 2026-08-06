@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendFocusedComplements, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, focusedOutfitRoleState, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendFocusedComplements, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, focusedOutfitRoleState, inspirationRequestedRole, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -46,10 +46,18 @@ test("focused outfit shopping fills missing roles instead of duplicating occupie
   const focus = ["top", "bottom", "shoes"];
   assert.equal(canCompleteFocusedOutfit({ title: "Wide leg pants", category: "bottoms" }, wardrobe, focus), false);
   assert.equal(canCompleteFocusedOutfit({ title: "Leather loafers", category: "shoes" }, wardrobe, focus), false);
-  assert.equal(canCompleteFocusedOutfit({ title: "Sheer layering turtleneck", category: "tops" }, wardrobe, focus), true);
+  assert.equal(canCompleteFocusedOutfit({ title: "Sheer layering turtleneck", category: "tops" }, wardrobe, focus), false);
   assert.equal(canCompleteFocusedOutfit({ title: "Graphic tee", category: "tops" }, wardrobe, focus), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Slip dress", category: "dresses" }, wardrobe, focus), false);
   assert.equal(canCompleteFocusedOutfit({ title: "Patterned tights", category: "accessories" }, wardrobe, focus), true);
   assert.equal(canCompleteFocusedOutfit({ title: "Wool coat", category: "outerwear" }, wardrobe, focus), true);
+});
+
+test("a dress prevents replacement tops and bottoms", () => {
+  const wardrobe = [{ id: "dress", category: "dresses" }];
+  assert.equal(canCompleteFocusedOutfit({ title: "Tank", category: "tops" }, wardrobe, ["dress"]), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Skirt", category: "bottoms" }, wardrobe, ["dress"]), false);
+  assert.equal(canCompleteFocusedOutfit({ title: "Beret", category: "accessories" }, wardrobe, ["dress"]), true);
 });
 
 test("saved categories override dress-like labels and focused results use each slot once", () => {
@@ -64,4 +72,10 @@ test("saved categories override dress-like labels and focused results use each s
     { id: "hat", title: "Beret", category: "accessories" }
   ], wardrobe, ["long-top"], 6);
   assert.deepEqual(result.map(item => item.id), ["skirt-a", "shoe-a", "hat"]);
+});
+
+test("inspiration shopping recognizes explicit top and bottom searches", () => {
+  assert.equal(inspirationRequestedRole("Find purchasable tops visually similar to this photo. Return tops only."), "tops");
+  assert.equal(inspirationRequestedRole("Find purchasable bottoms visually similar to this photo. Return bottoms only."), "bottoms");
+  assert.equal(inspirationRequestedRole("Find the strongest pieces from the whole look"), null);
 });

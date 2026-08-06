@@ -15,6 +15,7 @@ struct InspirationView: View {
     @State private var error: String?
     @State private var retryCompleted = 0
     @State private var retryTotal = 0
+    @State private var shopRequest: InspirationShopRequest?
 
     var body: some View {
         let isImporting = importing
@@ -121,6 +122,20 @@ struct InspirationView: View {
             guard status == .available else { return }
             Task { await upgradeOutdatedLooksIfPossible() }
         }
+        .sheet(item: $shopRequest) { request in
+            NavigationStack {
+                WishlistView(
+                    showSettings: $showSettings, showActivity: $showActivity, activityCount: activityCount,
+                    initialQuery: request.query, autoSearch: true,
+                    focusInspirationIDs: [request.lookID]
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { shopRequest = nil }
+                    }
+                }
+            }
+        }
     }
 
     private func inspirationCard(_ look: InspirationLook) -> some View {
@@ -141,6 +156,17 @@ struct InspirationView: View {
                 Button { toggleFavorite(look) } label: {
                     Image(systemName: look.isFavorite ? "heart.fill" : "heart").foregroundStyle(WearwellTheme.coral)
                 }.buttonStyle(.plain).accessibilityLabel(look.isFavorite ? "Remove favorite emphasis" : "Emphasize this look")
+            }
+            if look.state == "ready" {
+                Menu {
+                    Button("Whole look", systemImage: "square.grid.2x2") { shop(look, target: .wholeLook) }
+                    Button("Similar tops", systemImage: "tshirt") { shop(look, target: .tops) }
+                    Button("Similar bottoms", systemImage: "figure.walk") { shop(look, target: .bottoms) }
+                } label: {
+                    Label("Shop similar", systemImage: "bag.badge.plus")
+                        .font(.caption.weight(.semibold)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
             if look.state == "failed" {
                 if let message = look.errorMessage {
@@ -168,6 +194,10 @@ struct InspirationView: View {
         case "queued": "Queued"
         default: "Analyzing"
         }
+    }
+
+    private func shop(_ look: InspirationLook, target: InspirationShopTarget) {
+        shopRequest = InspirationShopRequest(lookID: look.id, target: target)
     }
 
     private var retryTitle: String {
@@ -263,5 +293,31 @@ struct InspirationView: View {
         await AssetStore.shared.remove(named: look.assetName)
         context.delete(look); try? context.save()
         _ = try? StylePreferenceCache.refresh(looks: looks.filter { $0.id != look.id }, context: context)
+    }
+}
+
+private enum InspirationShopTarget {
+    case wholeLook, tops, bottoms
+
+    var query: String {
+        switch self {
+        case .wholeLook:
+            "Find visually similar, purchasable pieces from this exact inspiration photo. Include the strongest tops, bottoms, layers, shoes, or accessories that reproduce its silhouette, proportions, palette, texture, and styling details."
+        case .tops:
+            "Find purchasable tops visually similar to the top or upper-body layers in this exact inspiration photo. Match silhouette, neckline, sleeve shape, material, color, print, and styling details. Return tops only."
+        case .bottoms:
+            "Find purchasable bottoms visually similar to the bottoms in this exact inspiration photo. Match silhouette, rise, length, material, color, print, and styling details. Return bottoms only."
+        }
+    }
+}
+
+private struct InspirationShopRequest: Identifiable {
+    let id = UUID()
+    let lookID: UUID
+    let query: String
+
+    init(lookID: UUID, target: InspirationShopTarget) {
+        self.lookID = lookID
+        query = target.query
     }
 }

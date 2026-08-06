@@ -237,6 +237,7 @@ struct WardrobeGapResponseDTO: Codable, Equatable {
     }
 
     var isOutfitSpecific: Bool { originContext == "outfit" }
+    var isInspirationSpecific: Bool { originContext.hasPrefix("inspiration:") || originContext == "inspiration" }
     var visibleProducts: [DiscoveredProductDTO] { products.filter { !dismissedIDs.contains($0.id) } }
     var belongsInStudioResults: Bool {
         isOutfitSpecific && (["queued", "processing"].contains(state) || (state == "complete" && !visibleProducts.isEmpty))

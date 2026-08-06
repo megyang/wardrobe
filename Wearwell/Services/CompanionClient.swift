@@ -394,6 +394,7 @@ final class CompanionClient: ObservableObject {
         inspirations: [InspirationLook],
         shoppingProfile: ShoppingProfileDTO,
         focusGarmentIDs: [UUID] = [],
+        focusInspirationIDs: [UUID] = [],
         resultLimit: Int = 60
     ) async throws -> ShopDiscoveryJobDTO {
         status = .busy
@@ -402,7 +403,10 @@ final class CompanionClient: ObservableObject {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             status = .available
         }
-        let readyInspirations = StylePreferenceCache.relevantLooks(inspirations, query: query, limit: 8)
+        let focusedInspirationSet = Set(focusInspirationIDs)
+        let readyInspirations = focusedInspirationSet.isEmpty
+            ? StylePreferenceCache.relevantLooks(inspirations, query: query, limit: 8)
+            : inspirations.filter { focusedInspirationSet.contains($0.id) && $0.state == "ready" && $0.analysis != nil }
         let payload = ShopDiscoveryRequest(
             query: query,
             retailerDomains: shoppingProfile.retailerDomains,
@@ -411,6 +415,7 @@ final class CompanionClient: ObservableObject {
             wardrobe: garments.map(GarmentSummary.init),
             inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
             focusGarmentIDs: focusGarmentIDs,
+            focusInspirationIDs: focusInspirationIDs,
             resultLimit: resultLimit,
             garmentVisuals: await visualReferences(garments.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
@@ -743,6 +748,7 @@ private struct ShopDiscoveryRequest: Codable {
     let wardrobe: [GarmentSummary]
     let inspirationExamples: [InspirationExample]
     let focusGarmentIDs: [UUID]
+    let focusInspirationIDs: [UUID]
     let resultLimit: Int
     let garmentVisuals, inspirationVisuals: [VisualReference]
 }

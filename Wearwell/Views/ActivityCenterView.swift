@@ -84,7 +84,8 @@ struct ActivityCenterView: View {
         }
         values += feeds.map { feed in
             let state = ActivityEntryBuilder.normalized(feed.state)
-            return ActivityEntry(id: "shop-\(feed.id)", target: .shop(feed.id), title: feed.isOutfitSpecific ? "Products for an outfit" : "Shopping recommendations", detail: feed.progressStage ?? feed.errorMessage ?? feed.query, state: state, date: feed.progressUpdatedAt ?? feed.generatedAt, isUnread: feed.isUnread, estimatedSecondsRemaining: feed.estimatedSecondsRemaining)
+            let title = feed.isOutfitSpecific ? "Products for an outfit" : (feed.isInspirationSpecific ? "Products from inspiration" : "Shopping recommendations")
+            return ActivityEntry(id: "shop-\(feed.id)", target: .shop(feed.id), title: title, detail: feed.progressStage ?? feed.errorMessage ?? feed.query, state: state, date: feed.progressUpdatedAt ?? feed.generatedAt, isUnread: feed.isUnread, estimatedSecondsRemaining: feed.estimatedSecondsRemaining)
         }
         values += wishlist.compactMap { item -> ActivityEntry? in
             guard item.assessmentState != nil else { return nil }

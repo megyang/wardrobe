@@ -10,6 +10,7 @@ struct WishlistView: View {
     let autoSearch: Bool
     let shopOnly: Bool
     let focusGarmentIDs: [UUID]
+    let focusInspirationIDs: [UUID]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Query private var garments: [Garment]
@@ -40,7 +41,7 @@ struct WishlistView: View {
     init(
         showSettings: Binding<Bool>, showActivity: Binding<Bool> = .constant(false), activityCount: Int = 0,
         initialQuery: String = "", autoSearch: Bool = false,
-        shopOnly: Bool = false, focusGarmentIDs: [UUID] = []
+        shopOnly: Bool = false, focusGarmentIDs: [UUID] = [], focusInspirationIDs: [UUID] = []
     ) {
         _showSettings = showSettings
         _showActivity = showActivity
@@ -49,21 +50,36 @@ struct WishlistView: View {
         self.autoSearch = autoSearch
         self.shopOnly = shopOnly
         self.focusGarmentIDs = focusGarmentIDs
+        self.focusInspirationIDs = focusInspirationIDs
         _shopQuery = State(initialValue: initialQuery)
     }
 
     private var shoppingProfile: ShoppingProfile? { shoppingProfiles.first }
+    private var isInspirationShop: Bool { !focusInspirationIDs.isEmpty }
+    private var isFocusedShop: Bool { shopOnly || isInspirationShop }
+    private var searchOrigin: String {
+        if shopOnly { return "outfit" }
+        if let id = focusInspirationIDs.first { return "inspiration:\(id.uuidString)" }
+        return "wardrobe"
+    }
+    private var focusedInspiration: InspirationLook? {
+        let ids = Set(focusInspirationIDs)
+        return inspirations.first { ids.contains($0.id) }
+    }
     private var relevantFeeds: [ShopFeedSnapshot] {
         if shopOnly {
             return feedSnapshots.filter { $0.isOutfitSpecific && $0.query == initialQuery }
         }
-        return feedSnapshots.filter { !$0.isOutfitSpecific }
+        if isInspirationShop {
+            return feedSnapshots.filter { $0.originContext == searchOrigin && $0.query == initialQuery }
+        }
+        return feedSnapshots.filter { $0.originContext == "wardrobe" }
     }
     private var activeFeed: ShopFeedSnapshot? { relevantFeeds.first { ["queued", "processing"].contains($0.state) } }
     private var latestFeed: ShopFeedSnapshot? { relevantFeeds.first { $0.state == "complete" } }
     private var displayedFeed: ShopFeedSnapshot? {
         if let activeFeed, !activeFeed.products.isEmpty { return activeFeed }
-        if shopOnly, activeFeed != nil { return nil }
+        if isFocusedShop, activeFeed != nil { return nil }
         return latestFeed
     }
 
@@ -73,17 +89,28 @@ struct WishlistView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     EditorialHeader(
-                        eyebrow: shopOnly ? "For this exact outfit" : "Shop your wardrobe first",
-                        title: shopOnly ? "Pieces to complete the look" : "Shop",
-                        subtitle: shopOnly ? "Luna is matching real products to the clothes already on your collage." : "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe."
+                        eyebrow: shopOnly ? "For this exact outfit" : (isInspirationShop ? "From this inspiration" : "Shop your wardrobe first"),
+                        title: shopOnly ? "Pieces to complete the look" : (isInspirationShop ? "Shop similar pieces" : "Shop"),
+                        subtitle: shopOnly ? "Luna is matching real products to the clothes already on your collage." : (isInspirationShop ? "Luna compares real product images with the inspiration photo, not just its description." : "Test something you found or let Luna search selected stores for pieces that add real value to your wardrobe.")
                     )
-                    if !shopOnly {
+                    if let focusedInspiration {
+                        ZStack(alignment: .bottomLeading) {
+                            AssetImage(name: focusedInspiration.assetName, contentMode: .fill)
+                                .frame(height: 190).frame(maxWidth: .infinity).clipped()
+                            Label("Matching this inspiration photo", systemImage: "viewfinder")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                                .padding(10).background(.black.opacity(0.58), in: Capsule()).padding(12)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .accessibilityElement(children: .combine)
+                    }
+                    if !isFocusedShop {
                         Picker("Shop mode", selection: $shopMode) {
                             Label("Discover", systemImage: "sparkles").tag("discover")
                             Label("Check an item", systemImage: "checkmark.seal").tag("check")
                         }.pickerStyle(.segmented)
                     }
-                    if !shopOnly, shopMode == "check" { VStack(alignment: .leading, spacing: 14) {
+                    if !isFocusedShop, shopMode == "check" { VStack(alignment: .leading, spacing: 14) {
                         Text("Should I buy this?").font(.title3.bold())
                         Text("Submit any product, then build outfits with clothes you already own.").font(.subheadline).foregroundStyle(.secondary)
                         PhotosPicker(selection: $photo, matching: .images) {
@@ -121,7 +148,7 @@ struct WishlistView: View {
                     }
                     if shopMode == "check", let error { Text(error).foregroundStyle(.red).font(.subheadline) }
 
-                    if shopOnly || shopMode == "discover" {
+                    if isFocusedShop || shopMode == "discover" {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
@@ -198,7 +225,7 @@ struct WishlistView: View {
             }
             .refreshable { await startShopSearch(forcePersonalized: true) }
         }
-        .toolbar { if !shopOnly { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) } }
+        .toolbar { if !isFocusedShop { SettingsButton(isPresented: $showSettings, showActivity: $showActivity, activityCount: activityCount) } }
         .sheet(isPresented: $showShoppingPreferences) {
             if let shoppingProfile { NavigationStack { ShoppingPreferencesView(profile: shoppingProfile) } }
         }
@@ -220,7 +247,7 @@ struct WishlistView: View {
             if let selectedItem { WishlistDetailView(item: selectedItem, autoAssess: true) }
         }
         .task {
-            if !shopOnly {
+            if !isFocusedShop {
                 for feed in relevantFeeds where feed.isUnread { feed.isUnread = false }
                 try? context.save()
             }
@@ -328,7 +355,7 @@ struct WishlistView: View {
             : shopQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         shopWorking = true; shopError = nil
         let snapshot = ShopFeedSnapshot(
-            query: query, originContext: shopOnly ? "outfit" : "wardrobe",
+            query: query, originContext: searchOrigin,
             focusGarmentIDs: focusGarmentIDs
         )
         context.insert(snapshot); try? context.save()
@@ -339,7 +366,8 @@ struct WishlistView: View {
             let job = try await companion.submitShopDiscovery(
                 query: query, garments: garments, styleProfile: styleProfiles.first,
                 inspirations: inspirations, shoppingProfile: shoppingProfile.preferences,
-                focusGarmentIDs: focusGarmentIDs, resultLimit: shopOnly ? 6 : 60
+                focusGarmentIDs: focusGarmentIDs, focusInspirationIDs: focusInspirationIDs,
+                resultLimit: shopOnly ? 6 : (isInspirationShop ? 12 : 60)
             )
             snapshot.jobID = job.id; snapshot.state = job.state
             updateProgress(from: job)

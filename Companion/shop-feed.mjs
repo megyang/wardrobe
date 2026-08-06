@@ -69,6 +69,13 @@ export function productRole(product) {
   return null;
 }
 
+export function inspirationRequestedRole(query) {
+  const text = String(query || "").toLowerCase();
+  if (/\b(?:tops only|similar tops|find purchasable tops)\b/.test(text)) return "tops";
+  if (/\b(?:bottoms only|similar bottoms|find purchasable bottoms)\b/.test(text)) return "bottoms";
+  return null;
+}
+
 export function focusedOutfitRoleState(wardrobe, focusGarmentIDs) {
   const focus = new Set((focusGarmentIDs || []).map(String));
   const occupied = new Set(
@@ -84,11 +91,11 @@ export function canCompleteFocusedOutfit(product, wardrobe, focusGarmentIDs) {
   const { occupied } = focusedOutfitRoleState(wardrobe, focusGarmentIDs);
   const role = productRole(product);
   if (!role) return true;
-  if (["bottoms", "shoes", "dresses", "outerwear"].includes(role) && occupied.has(role)) return false;
-  if (role === "tops" && occupied.has("tops")) {
-    const text = [product?.category, product?.subcategory, product?.title, product?.label, product?.description, product?.details].filter(Boolean).join(" ").toLowerCase();
-    return /\b(?:layer|layering|under|undershirt|camisole|tank|turtleneck|mesh|sheer|cardigan|vest)\b/.test(text);
-  }
+  if (role === "dresses" && ["tops", "bottoms", "dresses"].some(value => occupied.has(value))) return false;
+  if (occupied.has("dresses") && ["tops", "bottoms"].includes(role)) return false;
+  // Saved categories are the source of truth. An outfit search complements its
+  // existing pieces; it never silently replaces a filled clothing slot.
+  if (["tops", "bottoms", "shoes", "dresses", "outerwear"].includes(role) && occupied.has(role)) return false;
   return true;
 }
 
