@@ -120,7 +120,11 @@ struct OutfitStudioView: View {
 private struct OutfitProductResultsView: View {
     @Bindable var feed: ShopFeedSnapshot
     @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismissView
     @Query private var garments: [Garment]
+    @Query private var savedProducts: [WishlistItem]
+    @State private var savingProductIDs: Set<String> = []
+    @State private var notice: String?
 
     private var focusLabel: String {
         let ids = Set(feed.focusGarmentIDs)
@@ -136,17 +140,70 @@ private struct OutfitProductResultsView: View {
                     subtitle: "Selected specifically for \(focusLabel), to fill missing roles rather than repeat what is already there."
                 )
                 ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }.prefix(6)) { product in
-                    ShopProductCard(product: product, test: nil, dismiss: { dismiss(product) })
+                    ShopProductCard(
+                        product: product,
+                        test: nil,
+                        dismiss: { delete(product) },
+                        save: { Task { await save(product) } },
+                        isSaving: savingProductIDs.contains(product.id)
+                    )
                 }
             }.padding()
         }
         .background(WearwellTheme.cream.ignoresSafeArea())
         .onAppear { feed.isUnread = false; try? context.save() }
+        .alert("Saved products", isPresented: Binding(
+            get: { notice != nil }, set: { if !$0 { notice = nil } }
+        )) { Button("OK") { notice = nil } } message: { Text(notice ?? "") }
     }
 
-    private func dismiss(_ product: DiscoveredProductDTO) {
-        var dismissed = feed.dismissedIDs; dismissed.insert(product.id); feed.dismissedIDs = dismissed
-        try? context.save()
+    private func delete(_ product: DiscoveredProductDTO) {
+        removeFromStudio(product)
+    }
+
+    @MainActor private func save(_ product: DiscoveredProductDTO) async {
+        guard !savingProductIDs.contains(product.id) else { return }
+        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+            removeFromStudio(product)
+            notice = "This product was already in Saved, so it was removed from Studio."
+            return
+        }
+        savingProductIDs.insert(product.id)
+        defer { savingProductIDs.remove(product.id) }
+        do {
+            let data = try await ImportService.image(from: product.imageURL).0
+            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
+            let category = GarmentCategory(rawValue: product.category) ?? .tops
+            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
+            let item = WishlistItem(
+                label: product.title,
+                category: category,
+                color: product.colors.first ?? "",
+                details: "Saved from \(product.retailer). \(price).",
+                sourceAssetName: assetName,
+                catalogAssetName: assetName,
+                sourceURL: product.canonicalURL,
+                fingerprint: "shop:\(product.id)"
+            )
+            context.insert(item)
+            removeFromStudio(product, saveContext: false)
+            try context.save()
+            notice = "Saved to Saved for later."
+        } catch {
+            notice = "This product couldn't be saved: \(error.localizedDescription)"
+        }
+    }
+
+    private func removeFromStudio(_ product: DiscoveredProductDTO, saveContext: Bool = true) {
+        var remaining = feed.products
+        remaining.removeAll { $0.id == product.id }
+        feed.products = remaining
+        var dismissed = feed.dismissedIDs; dismissed.remove(product.id); feed.dismissedIDs = dismissed
+        if remaining.isEmpty {
+            dismissView()
+            context.delete(feed)
+        }
+        if saveContext { try? context.save() }
     }
 }
 

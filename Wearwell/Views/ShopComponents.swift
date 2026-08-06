@@ -5,6 +5,8 @@ struct ShopProductCard: View {
     let product: DiscoveredProductDTO
     let test: (() -> Void)?
     let dismiss: () -> Void
+    var save: (() -> Void)? = nil
+    var isSaving = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -28,12 +30,19 @@ struct ShopProductCard: View {
             price
             if !product.rationale.isEmpty { Text(product.rationale).font(.subheadline).foregroundStyle(.secondary) }
             HStack {
+                if let save {
+                    Button(action: save) {
+                        if isSaving { ProgressView() } else { Label("Save", systemImage: "heart") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSaving)
+                }
                 if let test { Button("Test with my wardrobe", action: test).buttonStyle(.borderedProminent) }
                 Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: { Image(systemName: "safari") }
                     .buttonStyle(.bordered).accessibilityLabel("View at retailer")
                 Spacer()
                 Button(role: .destructive, action: dismiss) { Image(systemName: "xmark") }
-                    .buttonStyle(.borderless).accessibilityLabel("Dismiss recommendation")
+                    .buttonStyle(.borderless).accessibilityLabel("Delete recommendation")
             }
         }
         .padding(16)
