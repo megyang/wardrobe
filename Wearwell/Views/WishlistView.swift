@@ -34,6 +34,7 @@ struct WishlistView: View {
     @State private var shopEstimateUpdatedAt = Date.now
     @State private var shopMode = "discover"
     @State private var savingProductIDs: Set<String> = []
+    @State private var testingProductIDs: Set<String> = []
     @State private var saveNotice: String?
 
     init(
@@ -178,7 +179,8 @@ struct WishlistView: View {
                                     test: { Task { await test(product) } },
                                     dismiss: { dismiss(product, from: feed) },
                                     save: { Task { await save(product, from: feed) } },
-                                    isSaving: savingProductIDs.contains(product.id)
+                                    isSaving: savingProductIDs.contains(product.id),
+                                    testState: testState(for: product)
                                 )
                             }
                         }
@@ -427,13 +429,56 @@ struct WishlistView: View {
         } catch { saveNotice = "This product couldn't be saved: \(error.localizedDescription)" }
     }
 
-    private func test(_ product: DiscoveredProductDTO) async {
-        working = true; error = nil
+    private func testState(for product: DiscoveredProductDTO) -> ShopProductTestState {
+        if testingProductIDs.contains(product.id) { return .queueing }
+        if let item = savedProducts.first(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) {
+            return item.assessmentState.map { ["submitting", "queued", "processing"].contains($0) } == true ? .queued : .saved
+        }
+        return .idle
+    }
+
+    @MainActor private func test(_ product: DiscoveredProductDTO) async {
+        guard !testingProductIDs.contains(product.id) else { return }
+        guard companion.isPaired else {
+            shopError = "Pair the Mac companion before queueing a wardrobe test."
+            return
+        }
+        if savedProducts.contains(where: { $0.sourceURL == product.canonicalURL || $0.fingerprint == "shop:\(product.id)" }) { return }
+        testingProductIDs.insert(product.id)
+        shopError = nil
+        var item: WishlistItem?
         do {
-            let image = try await ImportService.image(from: product.imageURL).0
-            await create(from: image, sourceURL: product.canonicalURL, discovery: product, managesWorkingState: false)
-        } catch { self.error = error.localizedDescription }
-        working = false
+            let data = try await ImportService.image(from: product.imageURL).0
+            let assetName = try await AssetStore.shared.save(data, preferredExtension: "jpg")
+            let category = GarmentCategory(rawValue: product.category) ?? .tops
+            let price = product.currentPrice.map { $0.formatted(.currency(code: product.currency ?? "USD")) } ?? "Price unavailable"
+            let candidate = WishlistItem(
+                label: product.title, category: category, color: product.colors.first ?? "",
+                details: "Testing from \(product.retailer). \(price). \(product.rationale)",
+                sourceAssetName: assetName, catalogAssetName: assetName,
+                sourceURL: product.canonicalURL, fingerprint: "shop:\(product.id)"
+            )
+            candidate.assessmentState = "submitting"
+            candidate.assessmentStage = "Queueing wardrobe test"
+            context.insert(candidate)
+            try context.save()
+            item = candidate
+
+            let job = try await companion.submitAssessment(
+                candidate: candidate, garments: garments,
+                styleProfile: styleProfiles.first, inspirations: inspirations
+            )
+            candidate.assessmentJobID = job.id
+            _ = PurchaseAssessmentResults.apply(job, to: candidate, garments: garments, outfits: [], context: context)
+            if job.state == "complete" { candidate.isUnreadAssessment = true }
+            try context.save()
+        } catch {
+            item?.assessmentState = "failed"
+            item?.assessmentError = error.localizedDescription
+            shopError = "\(product.title) could not be queued: \(error.localizedDescription)"
+            try? context.save()
+        }
+        testingProductIDs.remove(product.id)
     }
 }
 

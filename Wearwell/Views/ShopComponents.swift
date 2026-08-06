@@ -1,25 +1,60 @@
 import SwiftData
 import SwiftUI
 
+enum ShopProductTestState: Equatable {
+    case idle, queueing, queued, saved
+
+    var label: String {
+        switch self {
+        case .idle: "Wardrobe test"
+        case .queueing: "Queueing…"
+        case .queued: "Queued"
+        case .saved: "In Saved"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .idle: "sparkles"
+        case .queueing: "clock"
+        case .queued: "checkmark.circle.fill"
+        case .saved: "bookmark.fill"
+        }
+    }
+}
+
 struct ShopProductCard: View {
     let product: DiscoveredProductDTO
     let test: (() -> Void)?
     let dismiss: () -> Void
     var save: (() -> Void)? = nil
     var isSaving = false
+    var testState: ShopProductTestState = .idle
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AsyncImage(url: URL(string: product.imageURL)) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFit()
-                case .failure: ContentUnavailableView("Image unavailable", systemImage: "photo")
-                default: ProgressView()
+            ZStack(alignment: .topTrailing) {
+                AsyncImage(url: URL(string: product.imageURL)) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFit()
+                    case .failure: ContentUnavailableView("Image unavailable", systemImage: "photo")
+                    default: ProgressView()
+                    }
                 }
+                .frame(maxWidth: .infinity).frame(height: 260)
+                .background(WearwellTheme.previewSurface, in: RoundedRectangle(cornerRadius: 14))
+
+                Button(role: .destructive, action: dismiss) {
+                    Image(systemName: "xmark").font(.caption.bold())
+                        .frame(width: 34, height: 34)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .contentShape(Circle())
+                .padding(10)
+                .accessibilityLabel("Delete recommendation")
             }
-            .frame(maxWidth: .infinity).frame(height: 260)
-            .background(WearwellTheme.previewSurface, in: RoundedRectangle(cornerRadius: 14))
 
             HStack(alignment: .firstTextBaseline) {
                 Text(product.retailer.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(WearwellTheme.sage)
@@ -29,21 +64,40 @@ struct ShopProductCard: View {
             Text(product.title).font(.headline)
             price
             if !product.rationale.isEmpty { Text(product.rationale).font(.subheadline).foregroundStyle(.secondary) }
-            HStack {
+            HStack(spacing: 8) {
                 if let save {
                     Button(action: save) {
-                        if isSaving { ProgressView() } else { Label("Save", systemImage: "heart") }
+                        HStack(spacing: 5) {
+                            if isSaving { ProgressView() } else { Image(systemName: "heart") }
+                            Text(isSaving ? "Saving…" : "Save")
+                        }
+                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .disabled(isSaving)
                 }
-                if let test { Button("Test with my wardrobe", action: test).buttonStyle(.borderedProminent) }
-                Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: { Image(systemName: "safari") }
-                    .buttonStyle(.bordered).accessibilityLabel("View at retailer")
-                Spacer()
-                Button(role: .destructive, action: dismiss) { Image(systemName: "xmark") }
-                    .buttonStyle(.borderless).accessibilityLabel("Delete recommendation")
+                if let test {
+                    Button(action: test) {
+                        HStack(spacing: 5) {
+                            if testState == .queueing { ProgressView() }
+                            else { Image(systemName: testState.icon) }
+                            Text(testState.label)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(testState != .idle)
+                }
+                Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: {
+                    Image(systemName: "safari").frame(width: 24, height: 24)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Open in Safari")
             }
+            .controlSize(.large)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
         }
         .padding(16)
         .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 18))
