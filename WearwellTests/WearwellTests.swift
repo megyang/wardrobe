@@ -9,12 +9,14 @@ final class WearwellTests: XCTestCase {
         let source = try makeInMemoryContainer()
         let sourceContext = source.mainContext
         let image = Data("catalog-image".utf8)
+        let wornImage = Data("worn-scarf-view".utf8)
         let id = UUID()
         let outfitID = UUID()
-        sourceContext.insert(Garment(id: id, label: "Blue shirt", category: .tops, color: "Blue", sourceAssetName: "shirt.jpg", catalogAssetName: "shirt.jpg"))
+        sourceContext.insert(Garment(id: id, label: "Blue scarf", category: .accessories, subcategory: .scarf, color: "Blue", sourceAssetName: "scarf-flat.jpg", additionalSourceAssetNames: ["scarf-worn.jpg"], catalogAssetName: "scarf-flat.jpg"))
         sourceContext.insert(Outfit(id: outfitID, title: "Travel day", origin: .manual, layout: [LayoutItem(garmentID: id)]))
         sourceContext.insert(PackingTrip(title: "Montreal", startDate: .now, endDate: .now, assignments: [PackingAssignment(day: .now, outfitID: outfitID)], packedGarmentIDs: [id]))
-        sourceContext.insert(AssetBlob(name: "shirt.jpg", data: image))
+        sourceContext.insert(AssetBlob(name: "scarf-flat.jpg", data: image))
+        sourceContext.insert(AssetBlob(name: "scarf-worn.jpg", data: wornImage))
         try sourceContext.save()
 
         let document = try await BackupService.makeDocument(context: sourceContext)
@@ -33,13 +35,15 @@ final class WearwellTests: XCTestCase {
         let trips = try destinationContext.fetch(FetchDescriptor<PackingTrip>())
 
         XCTAssertEqual(first.recordsApplied, 3)
-        XCTAssertEqual(first.assetsApplied, 1)
+        XCTAssertEqual(first.assetsApplied, 2)
         XCTAssertEqual(second.assetsApplied, 0)
-        XCTAssertEqual(second.assetsUnchanged, 1)
+        XCTAssertEqual(second.assetsUnchanged, 2)
         XCTAssertEqual(garments.count, 2)
-        XCTAssertEqual(garments.first(where: { $0.id == id })?.label, "Blue shirt")
-        XCTAssertEqual(blobs.count, 1)
-        XCTAssertEqual(blobs.first?.data, image)
+        XCTAssertEqual(garments.first(where: { $0.id == id })?.label, "Blue scarf")
+        XCTAssertEqual(garments.first(where: { $0.id == id })?.additionalSourceAssetNames, ["scarf-worn.jpg"])
+        XCTAssertEqual(blobs.count, 2)
+        XCTAssertEqual(blobs.first(where: { $0.name == "scarf-flat.jpg" })?.data, image)
+        XCTAssertEqual(blobs.first(where: { $0.name == "scarf-worn.jpg" })?.data, wornImage)
         XCTAssertEqual(trips.first?.title, "Montreal")
         XCTAssertEqual(trips.first?.packedGarmentIDs, [id])
     }
@@ -793,7 +797,7 @@ final class WearwellTests: XCTestCase {
 
     @MainActor
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: WearwellSchemaV8.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV9.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

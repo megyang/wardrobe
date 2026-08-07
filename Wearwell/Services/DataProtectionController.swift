@@ -60,7 +60,7 @@ final class DataProtectionController: ObservableObject {
     func recoverOrphanedCatalogItems() throws -> Int {
         let context = ModelContext(modelContainer)
         let garments = try context.fetch(FetchDescriptor<Garment>())
-        let referencedNames = Set(garments.flatMap { [$0.sourceAssetName, $0.catalogAssetName] })
+        let referencedNames = Set(garments.flatMap { [$0.sourceAssetName, $0.catalogAssetName] + $0.additionalSourceAssetNames })
         let blobs = try context.fetch(FetchDescriptor<AssetBlob>(sortBy: [SortDescriptor(\.createdAt)]))
         let catalogBlobs = Dictionary(grouping: blobs, by: \.name)
             .compactMap { name, values -> AssetBlob? in

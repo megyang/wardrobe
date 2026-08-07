@@ -25,6 +25,7 @@ struct WearwellBackupManifest: Codable {
         var id: UUID; var label: String; var categoryRaw: String; var subcategoryRaw: String?
         var color: String; var details: String; var observed: String; var unknownsJSON: Data
         var confidence: Double; var fingerprint: String; var sourceAssetName: String; var catalogAssetName: String
+        var additionalSourceAssetNames: [String]? = nil
         var sourceURL: String?; var tags: String; var season: String; var occasion: String
         var isFavorite: Bool; var createdAt: Date; var modelVersion: String; var promptVersion: String
         var manualOrder: Int? = nil
@@ -210,7 +211,10 @@ enum BackupService {
             assetRecords[blob.name] = .init(name: blob.name, byteCount: value.count, sha256: sha256(value))
         }
         var referenced = Set<String>()
-        for item in garments { referenced.insert(item.sourceAssetName); referenced.insert(item.catalogAssetName) }
+        for item in garments {
+            referenced.insert(item.sourceAssetName); referenced.insert(item.catalogAssetName)
+            item.additionalSourceAssetNames.forEach { referenced.insert($0) }
+        }
         for item in wishlist { referenced.insert(item.sourceAssetName); referenced.insert(item.catalogAssetName) }
         for item in outfits { if let name = item.boardAssetName { referenced.insert(name) } }
         for item in visualizations { referenced.insert(item.assetName) }
@@ -225,7 +229,7 @@ enum BackupService {
         let manifest = WearwellBackupManifest(
             version: WearwellBackupManifest.currentVersion,
             createdAt: .now,
-            garments: garments.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, observed: $0.observed, unknownsJSON: $0.unknownsJSON, confidence: $0.confidence, fingerprint: $0.fingerprint, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, sourceURL: $0.sourceURL, tags: $0.tags, season: $0.season, occasion: $0.occasion, isFavorite: $0.isFavorite, createdAt: $0.createdAt, modelVersion: $0.modelVersion, promptVersion: $0.promptVersion, manualOrder: $0.manualOrder) },
+            garments: garments.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, observed: $0.observed, unknownsJSON: $0.unknownsJSON, confidence: $0.confidence, fingerprint: $0.fingerprint, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, additionalSourceAssetNames: $0.additionalSourceAssetNames, sourceURL: $0.sourceURL, tags: $0.tags, season: $0.season, occasion: $0.occasion, isFavorite: $0.isFavorite, createdAt: $0.createdAt, modelVersion: $0.modelVersion, promptVersion: $0.promptVersion, manualOrder: $0.manualOrder) },
             wishlistItems: wishlist.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, sourceURL: $0.sourceURL, fingerprint: $0.fingerprint, verdictRaw: $0.verdictRaw, verdictSummary: $0.verdictSummary, createdAt: $0.createdAt, purchasedAt: $0.purchasedAt) },
             outfits: outfits.map { .init(id: $0.id, title: $0.title, notes: $0.notes, rationale: $0.rationale, originRaw: $0.originRaw, layoutJSON: $0.layoutJSON, boardAssetName: $0.boardAssetName, wishlistItemID: $0.wishlistItemID, createdAt: $0.createdAt, updatedAt: $0.updatedAt, manualOrder: $0.manualOrder) },
             visualizations: visualizations.map { .init(id: $0.id, outfitID: $0.outfitID, modeRaw: $0.modeRaw, assetName: $0.assetName, createdAt: $0.createdAt, modelVersion: $0.modelVersion) },
@@ -275,6 +279,7 @@ enum BackupService {
             item.label = record.label; item.categoryRaw = record.categoryRaw; item.subcategoryRaw = record.subcategoryRaw; item.color = record.color
             item.details = record.details; item.observed = record.observed; item.unknownsJSON = record.unknownsJSON; item.confidence = record.confidence
             item.fingerprint = record.fingerprint; item.sourceAssetName = record.sourceAssetName; item.catalogAssetName = record.catalogAssetName
+            item.additionalSourceAssetNames = record.additionalSourceAssetNames ?? []
             item.sourceURL = record.sourceURL; item.tags = record.tags; item.season = record.season; item.occasion = record.occasion
             item.isFavorite = record.isFavorite; item.createdAt = record.createdAt; item.modelVersion = record.modelVersion; item.promptVersion = record.promptVersion
             item.manualOrder = record.manualOrder

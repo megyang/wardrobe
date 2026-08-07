@@ -212,12 +212,16 @@ struct GarmentDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDelete = false
     @State private var showImageRegenerator = false
+    @State private var additionalViewPickerItems: [PhotosPickerItem] = []
+    @State private var savingAdditionalViews = false
+    @State private var additionalViewError: String?
 
     private var savedOutfits: [Outfit] {
         outfits.filter { $0.belongsInOutfitLibrary && $0.contains(garmentID: garment.id) }
     }
 
     var body: some View {
+        let additionalViewButtonTitle = savingAdditionalViews ? "Saving views…" : "Add worn or alternate views"
         Form {
             Section {
                 CollageAssetImage(name: garment.catalogAssetName.isEmpty ? garment.sourceAssetName : garment.catalogAssetName)
@@ -251,6 +255,34 @@ struct GarmentDetailView: View {
                     }
                 } else if let regenerationError = garment.imageRegenerationError {
                     Text(regenerationError).font(.caption).foregroundStyle(.red)
+                }
+            }
+            if garment.category == .accessories && (garment.subcategory == .scarf || garment.label.localizedCaseInsensitiveContains("scarf")) {
+                Section("Scarf views for Luna") {
+                    Text("Keep a laid-out view and a worn view on this one item. Luna uses both to judge its scale, drape, and realistic ways to wear it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !garment.sourceAssetNames.isEmpty {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 12) {
+                                ForEach(Array(garment.sourceAssetNames.enumerated()), id: \.element) { index, name in
+                                    VStack(spacing: 6) {
+                                        AssetImage(name: name)
+                                            .scaledToFill().frame(width: 118, height: 145).clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                                        Text(index == 0 ? "Original" : "View \(index + 1)").font(.caption2)
+                                        if index > 0 {
+                                            Button("Remove", role: .destructive) { Task { await removeAdditionalView(named: name) } }
+                                                .font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                        }.scrollIndicators(.hidden)
+                    }
+                    PhotosPicker(selection: $additionalViewPickerItems, maxSelectionCount: 6, matching: .images) {
+                        Label(additionalViewButtonTitle, systemImage: "photo.badge.plus")
+                    }.disabled(savingAdditionalViews)
+                    if let additionalViewError { Text(additionalViewError).font(.caption).foregroundStyle(.red) }
                 }
             }
             Section {
@@ -323,6 +355,7 @@ struct GarmentDetailView: View {
         }
         .navigationTitle(garment.label).navigationBarTitleDisplayMode(.inline)
         .onAppear { garment.isUnreadImageRegeneration = false; try? context.save() }
+        .onChange(of: additionalViewPickerItems) { _, items in Task { await addAdditionalViews(items) } }
         .task(id: garment.imageRegenerationJobID) { await monitorImageRegeneration() }
         .sheet(isPresented: $showImageRegenerator) {
             GarmentImageRegenerationSheet(garment: garment)
@@ -330,14 +363,47 @@ struct GarmentDetailView: View {
         .confirmationDialog("Delete this garment and its local images?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete permanently", role: .destructive) {
                 Task {
-                    await AssetStore.shared.remove(named: garment.sourceAssetName)
+                    for name in garment.sourceAssetNames { await AssetStore.shared.remove(named: name) }
                     await AssetStore.shared.remove(named: garment.catalogAssetName)
                     if let pending = garment.pendingRegenerationSourceAssetName { await AssetStore.shared.remove(named: pending) }
+                    for pending in garment.pendingRegenerationAdditionalSourceAssetNames { await AssetStore.shared.remove(named: pending) }
                     if let pending = garment.pendingRegenerationCatalogAssetName { await AssetStore.shared.remove(named: pending) }
                     if let jobID = garment.imageRegenerationJobID { await companion.deleteAnalysisJob(id: jobID) }
                 }
                 context.delete(garment); try? context.save(); dismiss()
             }
+        }
+    }
+
+    private func addAdditionalViews(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        savingAdditionalViews = true; additionalViewError = nil
+        defer { savingAdditionalViews = false; additionalViewPickerItems = [] }
+        var saved: [String] = []
+        do {
+            for item in items {
+                guard let raw = try await item.loadTransferable(type: Data.self),
+                      let prepared = CropUtilities.preparedUploadData(raw) else { continue }
+                saved.append(try await AssetStore.shared.save(prepared, preferredExtension: "jpg"))
+            }
+            garment.additionalSourceAssetNames.append(contentsOf: saved)
+            try context.save()
+        } catch {
+            for name in saved { await AssetStore.shared.remove(named: name) }
+            additionalViewError = error.localizedDescription
+        }
+    }
+
+    private func removeAdditionalView(named name: String) async {
+        let oldNames = garment.additionalSourceAssetNames
+        garment.additionalSourceAssetNames.removeAll { $0 == name }
+        do {
+            try context.save()
+            await AssetStore.shared.remove(named: name)
+        } catch {
+            garment.additionalSourceAssetNames = oldNames
+            try? context.save()
+            additionalViewError = error.localizedDescription
         }
     }
 
@@ -418,8 +484,10 @@ struct GarmentDetailView: View {
 
     private func failRegeneration(_ message: String, jobID: String) async {
         if let pending = garment.pendingRegenerationSourceAssetName { await AssetStore.shared.remove(named: pending) }
+        for pending in garment.pendingRegenerationAdditionalSourceAssetNames { await AssetStore.shared.remove(named: pending) }
         if let pending = garment.pendingRegenerationCatalogAssetName { await AssetStore.shared.remove(named: pending) }
         garment.pendingRegenerationSourceAssetName = nil
+        garment.pendingRegenerationAdditionalSourceAssetNames = []
         garment.pendingRegenerationCatalogAssetName = nil
         garment.pendingRegenerationAnalysisJSON = nil
         garment.imageRegenerationJobID = nil
@@ -434,8 +502,10 @@ struct GarmentDetailView: View {
 
     private func discardRegeneratedImage() async {
         if let pending = garment.pendingRegenerationSourceAssetName { await AssetStore.shared.remove(named: pending) }
+        for pending in garment.pendingRegenerationAdditionalSourceAssetNames { await AssetStore.shared.remove(named: pending) }
         if let pending = garment.pendingRegenerationCatalogAssetName { await AssetStore.shared.remove(named: pending) }
         garment.pendingRegenerationSourceAssetName = nil
+        garment.pendingRegenerationAdditionalSourceAssetNames = []
         garment.pendingRegenerationCatalogAssetName = nil
         garment.pendingRegenerationAnalysisJSON = nil
         garment.imageRegenerationState = nil
@@ -450,8 +520,11 @@ struct GarmentDetailView: View {
               let analysisData = garment.pendingRegenerationAnalysisJSON,
               let analysis = try? JSONDecoder().decode(GarmentAnalysisDTO.self, from: analysisData) else { return }
         let oldSourceName = garment.sourceAssetName
+        let oldAdditionalSourceNames = garment.additionalSourceAssetNames
+        let newAdditionalSourceNames = garment.pendingRegenerationAdditionalSourceAssetNames
         let oldCatalogName = garment.catalogAssetName
         garment.sourceAssetName = newSourceName
+        garment.additionalSourceAssetNames = newAdditionalSourceNames
         garment.catalogAssetName = newCatalogName
         garment.observed = analysis.observed
         garment.unknownsJSON = (try? JSONEncoder().encode(analysis.unknowns)) ?? garment.unknownsJSON
@@ -459,6 +532,7 @@ struct GarmentDetailView: View {
         garment.fingerprint = analysis.fingerprint
         garment.modelVersion = analysis.modelVersion
         garment.pendingRegenerationSourceAssetName = nil
+        garment.pendingRegenerationAdditionalSourceAssetNames = []
         garment.pendingRegenerationCatalogAssetName = nil
         garment.pendingRegenerationAnalysisJSON = nil
         garment.imageRegenerationState = nil
@@ -468,14 +542,17 @@ struct GarmentDetailView: View {
             try context.save()
         } catch {
             garment.sourceAssetName = oldSourceName
+            garment.additionalSourceAssetNames = oldAdditionalSourceNames
             garment.catalogAssetName = oldCatalogName
             garment.pendingRegenerationSourceAssetName = newSourceName
+            garment.pendingRegenerationAdditionalSourceAssetNames = newAdditionalSourceNames
             garment.pendingRegenerationCatalogAssetName = newCatalogName
             garment.pendingRegenerationAnalysisJSON = analysisData
             try? context.save()
             return
         }
         if !oldSourceName.isEmpty, oldSourceName != newSourceName { await AssetStore.shared.remove(named: oldSourceName) }
+        for name in oldAdditionalSourceNames where !garment.additionalSourceAssetNames.contains(name) { await AssetStore.shared.remove(named: name) }
         if !oldCatalogName.isEmpty, oldCatalogName != newCatalogName { await AssetStore.shared.remove(named: oldCatalogName) }
     }
 }
@@ -569,11 +646,12 @@ private struct GarmentImageRegenerationSheet: View {
         processing = true; error = nil; stage = "Uploading new views"
         defer { processing = false }
 
-        var pendingSourceName: String?
+        var pendingSourceNames: [String] = []
         do {
-            pendingSourceName = try await AssetStore.shared.save(photos[0].data, preferredExtension: "jpg")
+            for photo in photos { pendingSourceNames.append(try await AssetStore.shared.save(photo.data, preferredExtension: "jpg")) }
             let job = try await companion.submitAnalysis(imageData: photos.map(\.data), sameItem: true)
-            garment.pendingRegenerationSourceAssetName = pendingSourceName
+            garment.pendingRegenerationSourceAssetName = pendingSourceNames.first
+            garment.pendingRegenerationAdditionalSourceAssetNames = Array(pendingSourceNames.dropFirst())
             garment.imageRegenerationJobID = job.id
             garment.imageRegenerationState = job.state
             garment.imageRegenerationStage = job.stage ?? "Queued for regeneration"
@@ -583,7 +661,7 @@ private struct GarmentImageRegenerationSheet: View {
             try context.save()
             dismiss()
         } catch {
-            if let pendingSourceName { await AssetStore.shared.remove(named: pendingSourceName) }
+            for name in pendingSourceNames { await AssetStore.shared.remove(named: name) }
             self.error = error.localizedDescription
         }
     }

@@ -62,10 +62,15 @@ enum WearwellSchemaV8: VersionedSchema {
     static let models: [any PersistentModel.Type] = WearwellSchemaV7.models
 }
 
+enum WearwellSchemaV9: VersionedSchema {
+    static let versionIdentifier = Schema.Version(9, 0, 0)
+    static let models: [any PersistentModel.Type] = WearwellSchemaV8.models
+}
+
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV8.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV9.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -77,6 +82,7 @@ struct WearwellApp: App {
         do {
             let container = try ModelContainer(for: schema, configurations: [configuration])
             try PersonalSubcategoryMigration.runIfNeeded(in: container, existingStore: existingStore)
+            try ScarfSubcategoryMigration.runIfNeeded(in: container)
             return container
         }
         catch { fatalError("Unable to create Wearwell store: \(error)") }
@@ -105,6 +111,24 @@ struct WearwellApp: App {
                 }
         }
         .modelContainer(container)
+    }
+}
+
+enum ScarfSubcategoryMigration {
+    private static let marker = "didAddScarfSubcategoryV9"
+
+    @MainActor
+    static func runIfNeeded(in container: ModelContainer, defaults: UserDefaults = .standard) throws {
+        guard !defaults.bool(forKey: marker) else { return }
+        let context = container.mainContext
+        let scarfValue = GarmentSubcategory.scarf.rawValue
+        let existing = try context.fetch(FetchDescriptor<WardrobeSubcategory>())
+        if !existing.contains(where: { $0.value == scarfValue }) {
+            let order = existing.filter { $0.category == .accessories }.map(\.sortOrder).max().map { $0 + 1 } ?? 0
+            context.insert(WardrobeSubcategory(value: scarfValue, name: GarmentSubcategory.scarf.title, category: .accessories, sortOrder: order))
+            try context.save()
+        }
+        defaults.set(true, forKey: marker)
     }
 }
 

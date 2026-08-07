@@ -149,6 +149,7 @@ test("garment subcategories cannot cross parent categories", () => {
   assert.equal(normalizeSubcategory("accessories", "misc"), "misc");
   assert.equal(normalizeSubcategory("accessories", "purse"), "purse");
   assert.equal(normalizeSubcategory("accessories", "jewelry"), "jewelry");
+  assert.equal(normalizeSubcategory("accessories", "scarf"), "scarf");
 });
 
 test("catalog prompt requests a removable solid chroma product background", () => {

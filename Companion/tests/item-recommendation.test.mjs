@@ -8,13 +8,14 @@ const wardrobe = [
   { id: "tights", category: "accessories", subcategory: "tights" },
   { id: "purse", category: "accessories", subcategory: "purse" },
   { id: "jewelry", category: "accessories", subcategory: "jewelry" },
+  { id: "scarf", category: "accessories", subcategory: "scarf" },
   { id: "misc", category: "accessories", subcategory: "misc" },
   { id: "coat", category: "outerwear", subcategory: "coat" }
 ];
 
 test("broad and precise recommendation targets use the wardrobe taxonomy", () => {
   assert.deepEqual(recommendationTarget({ category: "accessories", subcategory: "hat" }), { category: "accessories", subcategory: "hat" });
-  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "accessories" }).map(item => item.id), ["hat", "tights", "purse", "jewelry", "misc"]);
+  assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "accessories" }).map(item => item.id), ["hat", "tights", "purse", "jewelry", "scarf", "misc"]);
   assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "accessories", subcategory: "purse" }).map(item => item.id), ["purse"]);
   assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "accessories", subcategory: "jewelry" }).map(item => item.id), ["jewelry"]);
   assert.deepEqual(eligibleRecommendationItems(wardrobe, [], { category: "outerwear", subcategory: "coat" }).map(item => item.id), ["coat"]);
@@ -26,7 +27,7 @@ test("items already present in the collage are excluded", () => {
 });
 
 test("an untargeted collage request considers every unused category", () => {
-  assert.deepEqual(eligibleRecommendationItems(wardrobe, ["hat"], {}).map(item => item.id), ["bottom", "tights", "purse", "jewelry", "misc", "coat"]);
+  assert.deepEqual(eligibleRecommendationItems(wardrobe, ["hat"], {}).map(item => item.id), ["bottom", "tights", "purse", "jewelry", "scarf", "misc", "coat"]);
 });
 
 test("a user-owned custom subcategory can target matching wardrobe items", () => {

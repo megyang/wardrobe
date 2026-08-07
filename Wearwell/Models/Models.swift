@@ -32,6 +32,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
     case hat
     case purse
     case jewelry
+    case scarf
     case misc
 
     var id: String { rawValue }
@@ -40,7 +41,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .longSleeve, .tankTop, .tShirt, .sleeveless, .blouse: .tops
         case .shorts, .skirt, .miniSkirt, .midiSkirt, .maxiSkirt, .pants: .bottoms
         case .coverup, .sweater, .jacket, .coat: .outerwear
-        case .tights, .hat, .purse, .jewelry, .misc: .accessories
+        case .tights, .hat, .purse, .jewelry, .scarf, .misc: .accessories
         }
     }
     var title: String {
@@ -64,6 +65,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .hat: "Hat"
         case .purse: "Purse"
         case .jewelry: "Jewelry"
+        case .scarf: "Scarf"
         case .misc: "Misc"
         }
     }
@@ -83,6 +85,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .coat: "Coats"
         case .hat: "Hats"
         case .purse: "Purses"
+        case .scarf: "Scarves"
         default: title
         }
     }
@@ -241,6 +244,7 @@ enum OutfitLayout {
     var confidence: Double
     var fingerprint: String
     var sourceAssetName: String
+    var additionalSourceAssetNamesJSON: Data = Data()
     var catalogAssetName: String
     var sourceURL: String?
     var tags: String
@@ -258,6 +262,7 @@ enum OutfitLayout {
     var imageRegenerationUpdatedAt: Date?
     var isUnreadImageRegeneration: Bool = false
     var pendingRegenerationSourceAssetName: String?
+    var pendingRegenerationAdditionalSourceAssetNamesJSON: Data?
     var pendingRegenerationCatalogAssetName: String?
     var pendingRegenerationAnalysisJSON: Data?
 
@@ -273,14 +278,27 @@ enum OutfitLayout {
         set { subcategoryRaw = newValue?.category == category ? newValue?.rawValue : nil }
     }
     var unknowns: [String] { (try? JSONDecoder().decode([String].self, from: unknownsJSON)) ?? [] }
+    var additionalSourceAssetNames: [String] {
+        get { (try? JSONDecoder().decode([String].self, from: additionalSourceAssetNamesJSON)) ?? [] }
+        set { additionalSourceAssetNamesJSON = (try? JSONEncoder().encode(newValue)) ?? Data() }
+    }
+    var sourceAssetNames: [String] {
+        [sourceAssetName] + additionalSourceAssetNames
+    }
+    var pendingRegenerationAdditionalSourceAssetNames: [String] {
+        get { pendingRegenerationAdditionalSourceAssetNamesJSON.flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? [] }
+        set { pendingRegenerationAdditionalSourceAssetNamesJSON = try? JSONEncoder().encode(newValue) }
+    }
 
-    init(id: UUID = UUID(), label: String, category: GarmentCategory, subcategory: GarmentSubcategory? = nil, color: String, details: String = "", observed: String = "", unknowns: [String] = [], confidence: Double = 1, fingerprint: String = "", sourceAssetName: String = "", catalogAssetName: String = "", sourceURL: String? = nil, tags: String = "", season: String = "", occasion: String = "", isFavorite: Bool = false, createdAt: Date = .now, modelVersion: String = "user", promptVersion: String = "1") {
+    init(id: UUID = UUID(), label: String, category: GarmentCategory, subcategory: GarmentSubcategory? = nil, color: String, details: String = "", observed: String = "", unknowns: [String] = [], confidence: Double = 1, fingerprint: String = "", sourceAssetName: String = "", additionalSourceAssetNames: [String] = [], catalogAssetName: String = "", sourceURL: String? = nil, tags: String = "", season: String = "", occasion: String = "", isFavorite: Bool = false, createdAt: Date = .now, modelVersion: String = "user", promptVersion: String = "1") {
         self.id = id; self.label = label; self.categoryRaw = category.rawValue
         self.subcategoryRaw = subcategory?.category == category ? subcategory?.rawValue : nil; self.color = color
         self.details = details; self.observed = observed
         self.unknownsJSON = (try? JSONEncoder().encode(unknowns)) ?? Data()
         self.confidence = confidence; self.fingerprint = fingerprint
-        self.sourceAssetName = sourceAssetName; self.catalogAssetName = catalogAssetName
+        self.sourceAssetName = sourceAssetName
+        self.additionalSourceAssetNamesJSON = (try? JSONEncoder().encode(additionalSourceAssetNames)) ?? Data()
+        self.catalogAssetName = catalogAssetName
         self.sourceURL = sourceURL; self.tags = tags; self.season = season; self.occasion = occasion
         self.isFavorite = isFavorite; self.createdAt = createdAt
         self.modelVersion = modelVersion; self.promptVersion = promptVersion

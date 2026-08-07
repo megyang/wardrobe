@@ -256,7 +256,7 @@ final class CompanionClient: ObservableObject {
         let summaries = garments.map(GarmentSummary.init)
         let query = [occasion, weather, mood, request].joined(separator: " ")
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: query).compactMap(InspirationExample.init)
-        let garmentVisuals = await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 11 * 1024 * 1024)
+        let garmentVisuals = await visualReferences(garmentVisualSources(garments), byteBudget: 11 * 1024 * 1024)
         let relevantIDs = Set(examples.map(\.id))
         let inspirationVisuals = await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples, recentOutfits: Array(recentOutfits.prefix(18)), outfitFeedback: Array(outfitFeedback.prefix(80)), savedOutfits: Array(savedOutfits.prefix(30)), outfitEdits: Array(outfitEdits.prefix(40)), garmentVisuals: garmentVisuals, inspirationVisuals: inspirationVisuals)
@@ -273,9 +273,7 @@ final class CompanionClient: ObservableObject {
         let selected = Set(selectedGarmentIDs)
         let matches: (Garment) -> Bool = { (category == nil || $0.category == category) && (subcategory == nil || $0.subcategoryRaw == subcategory) }
         let relevant = garments.filter { selected.contains($0.id) || matches($0) }
-        let visuals = await visualReferences(relevant.map {
-            VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
-        }, byteBudget: 11 * 1024 * 1024)
+        let visuals = await visualReferences(garmentVisualSources(relevant), byteBudget: 11 * 1024 * 1024)
         let selectedSummary = garments.filter { selected.contains($0.id) }.map { "\($0.color) \($0.label)" }.joined(separator: " ")
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: selectedSummary, limit: 6).compactMap(InspirationExample.init)
         let exampleIDs = Set(examples.map(\.id))
@@ -309,9 +307,7 @@ final class CompanionClient: ObservableObject {
             existingNeeds: existingNeeds.filter { !$0.isCompleted }.map { $0.title },
             styleProfile: styleProfile?.profile,
             inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
-            garmentVisuals: await visualReferences(garments.map {
-                VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
-            }, byteBudget: 10 * 1024 * 1024),
+            garmentVisuals: await visualReferences(garmentVisualSources(garments), byteBudget: 10 * 1024 * 1024),
             inspirationVisuals: await visualReferences(readyInspirations.filter { relevantIDs.contains($0.id) }.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
             }, byteBudget: 3 * 1024 * 1024)
@@ -330,7 +326,7 @@ final class CompanionClient: ObservableObject {
         let summaries = garments.map(GarmentSummary.init)
         let query = [occasion, weather, mood, request].joined(separator: " ")
         let examples = StylePreferenceCache.relevantLooks(inspirations, query: query).compactMap(InspirationExample.init)
-        let garmentVisuals = await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 11 * 1024 * 1024)
+        let garmentVisuals = await visualReferences(garmentVisualSources(garments), byteBudget: 11 * 1024 * 1024)
         let relevantIDs = Set(examples.map(\.id))
         let inspirationVisuals = await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         let payload = StyleRequest(wardrobe: summaries, occasion: occasion, weather: weather, mood: mood, anchorID: anchorID, request: request, styleProfile: styleProfile?.profile, inspirationExamples: examples, recentOutfits: Array(recentOutfits.prefix(18)), outfitFeedback: Array(outfitFeedback.prefix(80)), savedOutfits: Array(savedOutfits.prefix(30)), outfitEdits: Array(outfitEdits.prefix(40)), garmentVisuals: garmentVisuals, inspirationVisuals: inspirationVisuals)
@@ -353,7 +349,7 @@ final class CompanionClient: ObservableObject {
             styleProfile: styleProfile?.profile,
             inspirationExamples: examples,
             candidateVisual: await visualReference(VisualSource(id: "__candidate__", assetName: candidate.catalogAssetName.isEmpty ? candidate.sourceAssetName : candidate.catalogAssetName)),
-            garmentVisuals: await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 10 * 1024 * 1024),
+            garmentVisuals: await visualReferences(garmentVisualSources(garments), byteBudget: 10 * 1024 * 1024),
             inspirationVisuals: await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         )
         let data = try await send(path: "v1/assess", body: payload)
@@ -375,7 +371,7 @@ final class CompanionClient: ObservableObject {
             styleProfile: styleProfile?.profile,
             inspirationExamples: examples,
             candidateVisual: await visualReference(VisualSource(id: "__candidate__", assetName: candidate.catalogAssetName.isEmpty ? candidate.sourceAssetName : candidate.catalogAssetName)),
-            garmentVisuals: await visualReferences(garments.map { VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName) }, byteBudget: 10 * 1024 * 1024),
+            garmentVisuals: await visualReferences(garmentVisualSources(garments), byteBudget: 10 * 1024 * 1024),
             inspirationVisuals: await visualReferences(inspirations.filter { relevantIDs.contains($0.id) }.map { VisualSource(id: $0.id.uuidString, assetName: $0.assetName) }, byteBudget: 2 * 1024 * 1024)
         )
         let data = try await send(path: "v1/jobs/assess", body: payload)
@@ -421,9 +417,7 @@ final class CompanionClient: ObservableObject {
             focusGarmentIDs: focusGarmentIDs,
             focusInspirationIDs: focusInspirationIDs,
             resultLimit: resultLimit,
-            garmentVisuals: searchMode == "catalog" ? [] : await visualReferences(garments.map {
-                VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
-            }, byteBudget: 10 * 1024 * 1024),
+            garmentVisuals: searchMode == "catalog" ? [] : await visualReferences(garmentVisualSources(garments), byteBudget: 10 * 1024 * 1024),
             inspirationVisuals: searchMode == "catalog" ? [] : await visualReferences(readyInspirations.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
             }, byteBudget: 3 * 1024 * 1024)
@@ -497,6 +491,15 @@ final class CompanionClient: ObservableObject {
     private func visualReference(_ source: VisualSource) async -> VisualReference? {
         guard let data = try? await AssetStore.shared.visualReferenceData(named: source.assetName) else { return nil }
         return VisualReference(id: source.id, imageBase64: data.base64EncodedString())
+    }
+
+    private func garmentVisualSources(_ garments: [Garment]) -> [VisualSource] {
+        garments.flatMap { garment in
+            let primary = garment.catalogAssetName.isEmpty ? garment.sourceAssetName : garment.catalogAssetName
+            return [VisualSource(id: garment.id.uuidString, assetName: primary)] + garment.additionalSourceAssetNames.map {
+                VisualSource(id: garment.id.uuidString, assetName: $0)
+            }
+        }
     }
 
     private func visualReferences(_ sources: [VisualSource], byteBudget: Int) async -> [VisualReference] {

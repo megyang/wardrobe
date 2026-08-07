@@ -16,6 +16,7 @@ private struct ReviewCandidate: Identifiable {
     var catalogData: Data?
     var catalogDataIsPrepared = false
     var sourceData: Data
+    var additionalSourceData: [Data] = []
     var sourceURL: String?
     var showsSource = false
     var showsEditor = false
@@ -356,24 +357,29 @@ struct AddClothesView: View {
             guard fingerprint.isEmpty || !knownFingerprints.contains(fingerprint) else { continue }
             var savedSource: String?
             var savedCatalog: String?
+            var savedAdditionalSources: [String] = []
             do {
                 let source = try await AssetStore.shared.save(review.sourceData, preferredExtension: "jpg")
                 savedSource = source
+                for viewData in review.additionalSourceData {
+                    savedAdditionalSources.append(try await AssetStore.shared.save(viewData, preferredExtension: "jpg"))
+                }
                 guard let rawCatalog = review.catalogData else {
                     throw ImportCutoutPreparationError.missingCutout(review.label)
                 }
                 let cleanedCatalog = review.catalogDataIsPrepared ? rawCatalog : (await preparedCatalogData(rawCatalog) ?? rawCatalog)
                 let catalog = try await AssetStore.shared.save(cleanedCatalog, preferredExtension: "png", preparedCollage: true)
                 savedCatalog = catalog
-                let garment = Garment(label: review.label, category: review.category, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion)
+                let garment = Garment(label: review.label, category: review.category, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: fingerprint, sourceAssetName: source, additionalSourceAssetNames: savedAdditionalSources, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion)
                 garment.subcategoryRaw = review.subcategoryRaw
                 newGarments.append(garment)
-                newAssetNames.append(contentsOf: [source, catalog])
+                newAssetNames.append(contentsOf: [source, catalog] + savedAdditionalSources)
                 if !fingerprint.isEmpty { knownFingerprints.insert(fingerprint) }
             } catch {
                 failedDraftIDs.insert(review.draftID)
                 await AssetStore.shared.remove(named: savedCatalog)
                 await AssetStore.shared.remove(named: savedSource)
+                for name in savedAdditionalSources { await AssetStore.shared.remove(named: name) }
                 self.error = "Some items could not be saved: \(error.localizedDescription)"
             }
         }
@@ -463,6 +469,14 @@ struct AddClothesView: View {
         }
         guard !missingItems.isEmpty else { return }
         guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName) else { return }
+        let additionalSourceData = await withTaskGroup(of: (Int, Data)?.self) { group in
+            for (index, name) in draft.sourceAssetNames.dropFirst().enumerated() {
+                group.addTask { guard let data = try? await AssetStore.shared.data(named: name) else { return nil }; return (index, data) }
+            }
+            var values: [(Int, Data)] = []
+            for await value in group { if let value { values.append(value) } }
+            return values.sorted { $0.0 < $1.0 }.map(\.1)
+        }
         var candidates: [ReviewCandidate] = []
         for item in missingItems {
             guard let catalogData = item.catalogImageBase64.flatMap({ Data(base64Encoded: $0) }) else {
@@ -472,7 +486,7 @@ struct AddClothesView: View {
             }
             let category = GarmentCategory(rawValue: item.category) ?? .tops
             let subcategoryRaw = subcategories.options(for: category).contains(where: { $0.value == item.subcategory }) ? item.subcategory : nil
-            candidates.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategoryRaw: subcategoryRaw, color: item.color, details: item.description, catalogData: catalogData, catalogDataIsPrepared: true, sourceData: sourceData, sourceURL: draft.sourceURL))
+            candidates.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategoryRaw: subcategoryRaw, color: item.color, details: item.description, catalogData: catalogData, catalogDataIsPrepared: true, sourceData: sourceData, additionalSourceData: draft.combinesSourcePhotos ? additionalSourceData : [], sourceURL: draft.sourceURL))
         }
         reviews.append(contentsOf: candidates)
     }
