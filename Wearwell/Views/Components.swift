@@ -86,6 +86,52 @@ struct EditorialHeader: View {
     }
 }
 
+struct LunaStylingNote: View {
+    let rationale: String
+
+    var body: some View {
+        if !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(WearwellTheme.coral)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Luna’s styling note")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(WearwellTheme.sage)
+                    Text(rationale)
+                        .font(.subheadline)
+                        .foregroundStyle(WearwellTheme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+func visibleLunaRationale(_ rationale: String, garmentIDs: [UUID], garments: [Garment]) -> String {
+    let selected = Set(garmentIDs)
+    guard let scarf = garments.first(where: {
+        selected.contains($0.id) &&
+            ($0.subcategory == .scarf || $0.label.localizedCaseInsensitiveContains("scarf"))
+    }) else { return rationale }
+
+    let lowered = rationale.lowercased()
+    let explicitlyStyled = lowered.contains("scarf") && [
+        "tie", "tied", "knot", "drape", "wrap", "loop", "wear", "worn", "style", "headscarf", "headband"
+    ].contains { lowered.contains($0) }
+    guard !explicitlyStyled else { return rationale }
+
+    let instruction = "Scarf styling: tie the \(scarf.label) loosely at the neck and let the ends drape."
+    return [rationale.trimmingCharacters(in: .whitespacesAndNewlines), instruction]
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+}
+
 struct AssetImage: View {
     let name: String
     var contentMode: ContentMode = .fit

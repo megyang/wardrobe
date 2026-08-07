@@ -418,8 +418,12 @@ struct AIStyleView: View {
                             NavigationLink {
                                 CollageEditorView(origin: .aiStyle, title: suggestion.title, rationale: suggestion.rationale, items: layout(for: suggestion))
                             } label: {
-                                VStack(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: 6) {
                                     Text(suggestion.title).font(.headline)
+                                    Text(visibleLunaRationale(suggestion.rationale, garmentIDs: suggestion.garmentIDs, garments: garments))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                     Label("Open \(suggestion.garmentIDs.count) pieces in manual editor", systemImage: "hand.draw").font(.caption2).foregroundStyle(WearwellTheme.sage)
                                 }
                             }
@@ -600,7 +604,12 @@ struct OutfitDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                EditorialHeader(eyebrow: outfit.originRaw, title: outfit.title, subtitle: outfit.rationale.isEmpty ? "An editable outfit from your wardrobe." : outfit.rationale, compact: true)
+                EditorialHeader(eyebrow: outfit.originRaw, title: outfit.title, subtitle: "An editable outfit from your wardrobe.", compact: true)
+                LunaStylingNote(rationale: visibleLunaRationale(
+                    outfit.rationale,
+                    garmentIDs: outfit.layout.compactMap(\.garmentID),
+                    garments: garments
+                ))
                 CollagePreview(items: outfit.layout, garments: garments, candidate: candidate).frame(height: 430)
                 NavigationLink {
                     CollageEditorView(outfit: outfit, wishlistItem: candidate)

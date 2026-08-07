@@ -12,6 +12,7 @@ import { SUBCATEGORIES, SUBCATEGORY_VALUES, normalizeSubcategory } from "./categ
 import { JOB_TTL_MS, PROCESSING_TIMEOUT_MS, isAnalysisJobOverdue } from "./job-lifecycle.mjs";
 import { hasValidOutfitComposition } from "./outfit-rules.mjs";
 import { outfitSimilarityKey, representedOutfitKeys } from "./outfit-similarity.mjs";
+import { ensureScarfStylingRationale } from "./scarf-styling.mjs";
 import { SerialQueue } from "./serial-queue.mjs";
 import { withAbortTimeout } from "./timeout.mjs";
 import { PriorityQueue } from "./priority-queue.mjs";
@@ -864,13 +865,20 @@ async function style(body, signal = null, workerIndex = null) {
     const candidate = byID.get(choice.candidateID);
     if (!candidate || selectedIDs.has(choice.candidateID)) continue;
     selectedIDs.add(choice.candidateID);
-    selected.push({ ...candidate, title: choice.title, rationale: choice.rationale });
+    selected.push({
+      ...candidate,
+      title: choice.title,
+      rationale: ensureScarfStylingRationale(candidate, body.wardrobe, choice.rationale)
+    });
   }
   for (const candidate of candidates) {
     if (selected.length >= 3) break;
     if (selectedIDs.has(candidate.candidateID)) continue;
     selectedIDs.add(candidate.candidateID);
-    selected.push(candidate);
+    selected.push({
+      ...candidate,
+      rationale: ensureScarfStylingRationale(candidate, body.wardrobe, candidate.rationale)
+    });
   }
   if (selected.length < 3) throw new Error("Luna did not produce three valid outfit combinations. Please try again.");
   return { outfits: selected.slice(0, 3).map(({ candidateID, ...item }) => ({ ...item, id: randomUUID() })) };

@@ -84,6 +84,13 @@ struct CollageEditorView: View {
                 .background(WearwellTheme.cream)
             }
             .aspectRatio(0.8, contentMode: .fit)
+            LunaStylingNote(rationale: visibleLunaRationale(
+                initialRationale,
+                garmentIDs: items.compactMap(\.garmentID),
+                garments: garments
+            ))
+                .padding(.horizontal)
+                .padding(.top, 10)
             controls
         }
         .background(WearwellTheme.cream.ignoresSafeArea())
