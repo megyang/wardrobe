@@ -92,7 +92,8 @@ struct LunaStylingNote: View {
     private var containsScarfGuidance: Bool {
         rationale.localizedCaseInsensitiveContains("scarf styling") ||
             rationale.localizedCaseInsensitiveContains("how to wear the scarf") ||
-            rationale.localizedCaseInsensitiveContains("another way")
+            rationale.localizedCaseInsensitiveContains("another way") ||
+            rationale.localizedCaseInsensitiveContains("scarf:")
     }
 
     var body: some View {
@@ -115,14 +116,37 @@ struct LunaStylingNote: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 14))
             .accessibilityElement(children: .combine)
-            if containsScarfGuidance {
-                Text("The collage keeps your saved product cutout; follow these directions to restyle the scarf when you wear the outfit.")
-                    .font(.caption2)
-                    .foregroundStyle(WearwellTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
+}
+
+private func shortened(_ value: String, words maximum: Int) -> String {
+    let words = value.split { $0.isWhitespace }
+    let text = words.prefix(maximum).joined(separator: " ")
+        .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
+    return text.isEmpty ? "" : text + "."
+}
+
+private func compactScarfRationale(_ value: String) -> String {
+    var sentences: [String] = []
+    value.enumerateSubstrings(in: value.startIndex..<value.endIndex, options: .bySentences) { substring, _, _, _ in
+        if let substring { sentences.append(substring.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+    let primary = sentences.first { $0.localizedCaseInsensitiveContains("how to wear") || $0.localizedCaseInsensitiveContains("scarf styling") || $0.localizedCaseInsensitiveContains("scarf:") }
+    let alternate = sentences.first { $0.localizedCaseInsensitiveContains("another way") || $0.localizedCaseInsensitiveContains("alternative:") }
+    let general = sentences.first { sentence in sentence != primary && sentence != alternate }
+    func instruction(_ sentence: String?) -> String {
+        guard let sentence else { return "" }
+        return sentence.replacingOccurrences(
+            of: #"(?i)^(how to wear (the )?scarf|scarf styling|scarf|another way|alternative):\s*"#,
+            with: "", options: .regularExpression
+        )
+    }
+    return [
+        general.map { shortened($0, words: 16) },
+        primary.map { "Scarf: \(shortened(instruction($0), words: 12))" },
+        alternate.map { "Alternative: \(shortened(instruction($0), words: 12))" }
+    ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
 }
 
 func visibleLunaRationale(_ rationale: String, garmentIDs: [UUID], garments: [Garment]) -> String {
@@ -133,19 +157,20 @@ func visibleLunaRationale(_ rationale: String, garmentIDs: [UUID], garments: [Ga
     }) else { return rationale }
 
     let lowered = rationale.lowercased()
-    let explicitlyStyled = lowered.contains("scarf") && lowered.contains("another way") && [
+    let explicitlyStyled = lowered.contains("scarf") &&
+        (lowered.contains("another way") || lowered.contains("alternative:")) && [
         "tie", "tied", "knot", "drape", "wrap", "loop", "wear", "worn", "style", "headscarf", "headband"
     ].contains { lowered.contains($0) }
-    guard !explicitlyStyled else { return rationale }
+    if explicitlyStyled { return compactScarfRationale(rationale) }
 
     let evidence = [scarf.label, scarf.details, scarf.observed].joined(separator: " ").lowercased()
     let alternate = evidence.range(of: #"\b(long|skinny|thin|narrow|slim)\b"#, options: .regularExpression) != nil
-        ? "Another way: use it as a ribbon around a low ponytail and leave the ends loose."
-        : "Another way: make a small side knot at the neck instead of copying the photographed drape."
-    let instruction = "How to wear the scarf: tie the \(scarf.label) close at the neck and leave the ends long and uneven. \(alternate)"
-    return [rationale.trimmingCharacters(in: .whitespacesAndNewlines), instruction]
+        ? "Alternative: low-ponytail ribbon with loose ends."
+        : "Alternative: small side knot at the neck."
+    let instruction = "Scarf: neck knot with long, uneven ends. \(alternate)"
+    return compactScarfRationale([rationale.trimmingCharacters(in: .whitespacesAndNewlines), instruction]
         .filter { !$0.isEmpty }
-        .joined(separator: " ")
+        .joined(separator: " "))
 }
 
 struct AssetImage: View {
