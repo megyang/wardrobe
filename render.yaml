@@ -2,10 +2,13 @@ services:
   - type: web
     name: wearwell-api-staging
     runtime: node
+    branch: codex/hosted-multiuser
+    autoDeployTrigger: commit
     rootDir: Backend
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /healthz
+    maxShutdownDelaySeconds: 30
     envVars: &wearwellEnv
       - key: NODE_ENV
         value: staging
@@ -26,7 +29,10 @@ services:
   - type: worker
     name: wearwell-worker-staging
     runtime: node
+    branch: codex/hosted-multiuser
+    autoDeployTrigger: commit
     rootDir: Backend
     buildCommand: npm ci
     startCommand: npm run worker
+    maxShutdownDelaySeconds: 120
     envVars: *wearwellEnv

@@ -722,6 +722,14 @@ The design intentionally handles several failure classes:
 
 ## 21. Security and privacy boundaries
 
+### Private friend sharing
+
+Friend links contain a high-entropy one-use token; PostgreSQL stores only its SHA-256 hash and a seven-day expiry. Redemption creates a canonical two-user friendship transactionally. Blocks remove the friendship, revoke pending invitations, and revoke non-copied shares in both directions.
+
+Sharing never grants access to wardrobe records or original garment assets. The phone renders a flattened outfit preview, uploads it as a private asset, and creates a recipient-specific immutable share. The API issues a short signed download only after checking the share participant and current block state. A recipient can toggle one heart reaction or explicitly copy the preview into a new asset and Inspiration record in their own namespace.
+
+The social schema includes `friend_invites`, `friendships`, `blocks`, `outfit_shares`, `share_reactions`, `share_copies`, and `activity_events`. Participant-only RLS policies provide defense in depth; the service-role API still applies explicit authorization to every query.
+
 Strong current choices include:
 
 - Server secrets never enter the iOS build.
@@ -744,18 +752,20 @@ Areas requiring ongoing scrutiny:
 - Remote asset garbage collection and deduplication.
 - Avoiding sensitive prompt or image data in logs.
 - Ensuring every new route filters by verified owner.
-- Rate limiting beyond monthly quotas.
+- Calibrating database-backed per-user rate limits and the global AI ceiling under real beta traffic.
 - Abuse prevention for invitation redemption and large job creation.
 - Ensuring account purge succeeds despite partial storage failures.
 - Security review of callback URLs and email-auth redirect configuration.
 
 ## 22. Logging, metrics, and observability
 
-Current observability is minimal but has useful foundations:
+Current observability has useful foundations:
 
 - Every API request receives a UUID request ID.
 - Controlled error responses return that request ID.
 - Server 5xx errors are logged as JSON with request ID and message.
+- Every API response logs a redacted route template, method, status, request ID, and latency.
+- Workers log claim, completion, retry, and terminal failure events by job ID without prompts or image content.
 - API startup logs environment and port.
 - Worker account-purge failures are JSON logged.
 - Completed jobs persist model name, latency, token usage, and image-call counts.
@@ -763,8 +773,7 @@ Current observability is minimal but has useful foundations:
 
 Important missing pieces for production operations:
 
-- Access logs for method, route template, status, latency, and request ID.
-- Worker logs for claim, attempt, completion, retry, lease loss, and failure.
+- A production log/metric destination and retention/redaction policy.
 - Metrics for queue depth, oldest queued age, processing duration, retry rate, validation rejection, and storage growth.
 - OpenAI latency/error breakdown by workflow and model.
 - Tracing from mobile request to API job to worker/model calls.
@@ -788,6 +797,7 @@ The Node tests cover:
 - inspiration vector shape and versioning
 - timeouts and queue behavior retained from the local implementation
 - item-recommendation eligibility
+- friend-token entropy, canonical friendship pairs, bounded public profile/share fields, social RLS markers, and private share authorization markers
 
 The Swift tests cover domain and image behavior, including:
 
@@ -824,13 +834,13 @@ Keep a versioned evaluation set with difficult cases such as layered clothing, l
 
 ## 24. Known gaps and migration checklist
 
-These items describe the audited 2026-08-05 working tree:
+These items describe the audited 2026-08-06 working tree:
 
 1. **Per-record iOS repositories remain the main refactor.** Snapshot synchronization is wired; direct view writes should move behind repositories before a broad beta.
 2. **Feedback persistence is incomplete.** Server tables exist, but some ratings and edit feedback still originate in `UserDefaults` and are sent in later style payloads.
-3. **Hosted semantic outfit validation needs another layer.** The phone validates results; the worker should also apply deterministic composition rules before completing a job.
-4. **Observability needs production integration.** Request IDs, usage, model, cost, and latency are persisted, but dashboards and alerts are not configured in source.
-5. **Usage accounting needs staged calibration.** Quotas count created jobs; successful actual usage is recorded separately, and image-token/call estimates must be compared with invoices.
+3. **Social integration requires real staging validation.** The schema, API, iOS flow, and two-account smoke script exist, but Supabase Auth/storage and signed-link behavior must be exercised with real accounts before TestFlight.
+4. **Observability needs production integration.** Structured API/worker logs and persisted usage exist, but dashboards and alerts are not configured in source.
+5. **Usage accounting needs staged calibration.** Per-user quotas, a global database budget/kill switch, and successful actual usage are recorded; estimates must be compared with invoices.
 6. **Share Extension capability depends on App Group configuration.** Verify the hosted branch's signing/capability setup before promising share-sheet handoff.
 7. **Deployment is intentionally staging-first.** Re-run the release checklist with two real accounts before production or external distribution.
 

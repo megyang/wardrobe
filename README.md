@@ -13,6 +13,8 @@ This branch is the cloud-authoritative Wearwell build. The personal Mac-assisted
 
 SwiftData is an account-scoped offline read cache. Foreground sync pulls the cloud snapshot, validates asset checksums, merges by UUID, then writes the merged snapshot back. Signing out or deleting an account clears records and cached images so another account cannot see them.
 
+Private social sharing is explicit and snapshot-based. Users connect through hashed, one-use friend links; wardrobes and garment source photos remain private. A sender shares one flattened outfit preview with one accepted friend. The recipient can heart it or copy the preview into their own private Inspiration library. Blocking revokes friendship and non-copied share access.
+
 ## Repository map
 
 - `Backend/` — API, worker, OpenAI workflows, prompt/schema/rule modules, and tests
@@ -32,6 +34,7 @@ Images are never embedded in job rows. Completed, cancelled, and terminally fail
 ## Run and verify
 
 See [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) for local Supabase, API/worker, invite, iOS, and staging instructions.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the credential checklist and staging-to-production release gates.
 
 ```sh
 cd Backend

@@ -55,6 +55,18 @@ struct SettingsView: View {
                 }
             }
 
+            if auth.isAuthenticated, hosted.status == .available {
+                Section("Private sharing") {
+                    NavigationLink {
+                        FriendsView()
+                    } label: {
+                        Label("Friends, shares, and activity", systemImage: "person.2")
+                    }
+                    Text("Everything stays private unless you explicitly share one flattened outfit preview with an accepted friend.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             Section("Offline cache") {
                 LabeledContent("Status") { StatusPill(text: protection.storageState.title, color: protection.storageState == .available ? WearwellTheme.sage : WearwellTheme.coral) }
                 Text("Previously synced wardrobe records and pictures remain readable offline. Changes, uploads, imports, and AI actions require a connection.").font(.caption).foregroundStyle(.secondary)

@@ -47,7 +47,10 @@ struct WearwellApp: App {
                     await protection.start()
                     await hosted.refreshStatus()
                 }
-                .onOpenURL { url in try? auth.handleCallback(url) }
+                .onOpenURL { url in
+                    if url.host == "friend-invite" { hosted.handleDeepLink(url) }
+                    else { try? auth.handleCallback(url) }
+                }
         }
         .modelContainer(container)
     }

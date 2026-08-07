@@ -7,6 +7,8 @@
 - Supabase CLI and Docker for the local stack
 - An OpenAI project API key
 
+You create the Supabase and OpenAI accounts only when you are ready to run the hosted service. Code review, unit tests, and the unsigned iOS build do not require real credentials. The OpenAI key is a worker secret and must never be added to the iOS configuration.
+
 ## Start the local services
 
 ```sh
@@ -75,6 +77,8 @@ After activating two staging beta users, run the checked-in isolation probe:
 STAGING_API_URL=https://wearwell-api-staging.onrender.com \
 STAGING_USER_A_TOKEN=... STAGING_USER_B_TOKEN=... npm run test:staging
 ```
+
+The probe now verifies record and asset isolation plus private friend invitation, sharing, signed preview access, and reactions. See `DEPLOYMENT.md` for the full remote setup sequence and admin commands.
 
 ## Staging first
 

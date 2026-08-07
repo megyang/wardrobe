@@ -23,3 +23,13 @@ tmp/
 xcuserdata/
 *.xcuserstate
 Config/Hosted.local.xcconfig
+
+# The primary personal worktree excludes the hosted Backend directory through
+# .git/info/exclude. Keep new hosted source and migrations visible in this branch.
+!Backend/
+!Backend/social.mjs
+!Backend/tests/
+!Backend/tests/social.test.mjs
+!Backend/supabase/
+!Backend/supabase/migrations/
+!Backend/supabase/migrations/0003_private_social.sql

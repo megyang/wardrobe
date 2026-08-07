@@ -34,6 +34,9 @@ struct RootTabView: View {
         }
         .background(WearwellTheme.cream)
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() }.keyboardDismissToolbar() }
+        .onChange(of: hosted.pendingFriendInviteToken) { _, token in
+            if token != nil { showSettings = true }
+        }
         .task {
             await expireOverdueImports()
             await hosted.refreshStatus()

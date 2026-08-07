@@ -135,7 +135,14 @@ private struct EmailLinkRequest: Encodable {
 final class HostedClient: ObservableObject {
     @Published var status: HostedStatus = HostedKeychain.string("accessToken") == nil ? .signedOut : .connecting
     @Published private(set) var lastSyncAt: Date?
+    @Published var pendingFriendInviteToken: String?
     var isAuthenticated: Bool { HostedKeychain.string("accessToken") != nil }
+
+    func handleDeepLink(_ url: URL) {
+        guard url.scheme == "wearwell", url.host == "friend-invite",
+              let token = url.pathComponents.last, token.count >= 24 else { return }
+        pendingFriendInviteToken = token
+    }
 
     func refreshStatus() async {
         guard isAuthenticated else { status = .signedOut; return }
@@ -149,6 +156,64 @@ final class HostedClient: ObservableObject {
     }
 
     func usage() async throws -> HostedUsage { try HostedHTTP.decoder.decode(HostedUsage.self, from: await request(path: "v1/usage", method: "GET", body: Optional<String>.none)) }
+
+    func socialProfile() async throws -> SocialProfileDTO {
+        try HostedHTTP.decoder.decode(SocialProfileDTO.self, from: await request(path: "v1/profile", method: "GET", body: Optional<String>.none))
+    }
+
+    func updateSocialProfile(displayName: String) async throws -> SocialProfileDTO {
+        try HostedHTTP.decoder.decode(SocialProfileDTO.self, from: await request(path: "v1/profile", method: "PUT", body: ["displayName": displayName]))
+    }
+
+    func createFriendInvite() async throws -> FriendInviteDTO {
+        try HostedHTTP.decoder.decode(FriendInviteDTO.self, from: await request(path: "v1/friend-invites", body: Optional<String>.none))
+    }
+
+    func redeemFriendInvite(_ token: String) async throws -> SocialFriendDTO {
+        let response = try HostedHTTP.decoder.decode(FriendRedemptionDTO.self, from: await request(path: "v1/friend-invites/redeem", body: ["token": token]))
+        pendingFriendInviteToken = nil
+        return response.friend
+    }
+
+    func friends() async throws -> [SocialFriendDTO] {
+        try HostedHTTP.decoder.decode(FriendsResponseDTO.self, from: await request(path: "v1/friends", method: "GET", body: Optional<String>.none)).friends
+    }
+
+    func removeFriend(_ id: String) async throws { _ = try await request(path: "v1/friends/\(id)", method: "DELETE", body: Optional<String>.none) }
+    func blockMember(_ id: String) async throws { _ = try await request(path: "v1/blocks/\(id)", body: Optional<String>.none) }
+
+    func shareOutfit(id: UUID, title: String, rationale: String, preview: Data, with recipientID: String) async throws -> String {
+        let previewAssetID = try await upload(images: [preview], kind: "outfit-share")[0]
+        let payload = SocialShareCreatePayload(
+            recipientID: recipientID, previewAssetID: previewAssetID, sourceOutfitID: id,
+            snapshot: .init(title: title, rationale: rationale)
+        )
+        return try HostedHTTP.decoder.decode(SocialShareCreatedDTO.self, from: await request(path: "v1/shares", body: payload, headers: ["Idempotency-Key": UUID().uuidString])).id
+    }
+
+    func sharedOutfits() async throws -> [SharedOutfitSummaryDTO] {
+        try HostedHTTP.decoder.decode(SharedOutfitsResponseDTO.self, from: await request(path: "v1/shares/inbox", method: "GET", body: Optional<String>.none)).shares
+    }
+
+    func sharedOutfit(_ id: String) async throws -> SharedOutfitDetailDTO {
+        try HostedHTTP.decoder.decode(SharedOutfitDetailDTO.self, from: await request(path: "v1/shares/\(id)", method: "GET", body: Optional<String>.none))
+    }
+
+    func setHeart(_ enabled: Bool, shareID: String) async throws {
+        _ = try await request(path: "v1/shares/\(shareID)/reaction", method: enabled ? "PUT" : "DELETE", body: Optional<String>.none)
+    }
+
+    func copyShareToInspiration(_ shareID: String) async throws -> SharedCopyDTO {
+        try HostedHTTP.decoder.decode(SharedCopyDTO.self, from: await request(path: "v1/shares/\(shareID)/copy", body: Optional<String>.none))
+    }
+
+    func activity() async throws -> [SocialActivityDTO] {
+        try HostedHTTP.decoder.decode(SocialActivityResponseDTO.self, from: await request(path: "v1/activity", method: "GET", body: Optional<String>.none)).events
+    }
+
+    func markActivityRead(through id: Int) async throws {
+        _ = try await request(path: "v1/activity/read", body: ["throughID": id])
+    }
 
     func submitAnalysis(imageData: Data, sourceURL: String? = nil) async throws -> AnalysisJobDTO { try await submitAnalysis(imageData: [imageData], sourceURL: sourceURL, sameItem: false) }
     func submitAnalysis(imageData: [Data], sourceURL: String? = nil, sameItem: Bool) async throws -> AnalysisJobDTO {
@@ -435,6 +500,38 @@ private struct AssetJobWire: Codable { let id,kind,state,createdAt,updatedAt:Str
 private struct AssetResult: Codable { let assetID:String }
 
 struct HostedUsage: Codable, Equatable { let analysisUsed, analysisLimit, styleUsed, styleLimit, imageUsed, imageLimit, storageUsed, storageLimit: Int }
+
+struct SocialProfileDTO: Codable, Equatable { let id, displayName: String; let avatarAssetID: String?; let createdAt: String }
+struct SocialFriendDTO: Codable, Identifiable, Equatable { let id, displayName: String; let avatarAssetID: String?; var createdAt: String? = nil }
+struct FriendInviteDTO: Codable, Equatable { let id, token, url, expiresAt, createdAt: String }
+private struct FriendRedemptionDTO: Codable { let friend: SocialFriendDTO }
+private struct FriendsResponseDTO: Codable { let friends: [SocialFriendDTO] }
+struct SocialShareSnapshotDTO: Codable, Equatable { let title, rationale: String }
+private struct SocialShareCreatePayload: Codable { let recipientID, previewAssetID: String; let sourceOutfitID: UUID; let snapshot: SocialShareSnapshotDTO }
+private struct SocialShareCreatedDTO: Codable { let id: String }
+struct SharedOutfitSummaryDTO: Codable, Identifiable, Equatable {
+    let id, senderID, createdAt: String
+    let snapshot: SocialShareSnapshotDTO
+    let displayName: String?
+    var reacted, copied: Bool
+}
+private struct SharedOutfitsResponseDTO: Codable { let shares: [SharedOutfitSummaryDTO]; let nextBefore: Double? }
+struct SharedOutfitDetailDTO: Codable, Identifiable, Equatable {
+    let id, senderID, recipientID, createdAt: String
+    let snapshot: SocialShareSnapshotDTO
+    let displayName: String?
+    let previewURL: String
+    var reacted, copied: Bool
+}
+struct SharedCopyDTO: Codable, Equatable { let inspirationID, assetID: String }
+struct SocialActivityDTO: Codable, Identifiable, Equatable {
+    let id: Int
+    let kind, createdAt: String
+    let objectID, actorID: String?
+    let actorName: String
+    let readAt: String?
+}
+private struct SocialActivityResponseDTO: Codable { let events: [SocialActivityDTO]; let nextBefore: Int? }
 
 private struct GarmentPayload: Codable {
     let id: UUID; let label, category: String; let subcategory: String?; let color, description, observed: String; let unknowns: [String]; let tags, season, occasion: String; let confidence: Double

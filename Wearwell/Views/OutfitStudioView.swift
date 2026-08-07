@@ -348,6 +348,8 @@ struct OutfitDetailView: View {
     @State private var confirmDelete = false
     @State private var exportURL: URL?
     @State private var showShareSheet = false
+    @State private var privateSharePreview: Data?
+    @State private var showPrivateShare = false
 
     private var candidate: WishlistItem? { candidates.first { $0.id == outfit.wishlistItemID } }
     private var renders: [Visualization] { visualizations.filter { $0.outfitID == outfit.id } }
@@ -381,6 +383,11 @@ struct OutfitDetailView: View {
                     }
                     .buttonStyle(.bordered)
                 }
+                Button { Task { await preparePrivateShare() } } label: {
+                    Label("Share privately with a friend", systemImage: "person.2.wave.2").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(hosted.status != .available)
                 Text("Visualize").font(.title2.bold())
                 HStack {
                     visualizationButton(.mannequin)
@@ -394,6 +401,9 @@ struct OutfitDetailView: View {
         }.background(WearwellTheme.cream).navigationBarTitleDisplayMode(.inline)
         .onChange(of: personPicker) { _, item in guard let item else { return }; Task { if let data = try? await item.loadTransferable(type: Data.self) { await render(mode: .onMe, reference: data) } } }
         .sheet(isPresented: $showShareSheet) { if let exportURL { ActivitySheet(items: [exportURL]) } }
+        .sheet(isPresented: $showPrivateShare) {
+            if let privateSharePreview { ShareOutfitView(outfit: outfit, preview: privateSharePreview) }
+        }
         .confirmationDialog("Delete this outfit?", isPresented: $confirmDelete) { Button("Delete", role: .destructive) { Task { await deleteOutfit() } } }
     }
 
@@ -418,6 +428,21 @@ struct OutfitDetailView: View {
     }
 
     private func exportCollage() async {
+        guard let data = await collagePNG() else { return }
+        do {
+            let url = FileManager.default.temporaryDirectory.appending(path: "Wearwell-\(outfit.id.uuidString).png")
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            exportURL = url; showShareSheet = true
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func preparePrivateShare() async {
+        guard let data = await collagePNG() else { error = "Wearwell could not prepare this outfit preview."; return }
+        privateSharePreview = data
+        showPrivateShare = true
+    }
+
+    private func collagePNG() async -> Data? {
         let canvas = CGSize(width: 1200, height: 1500)
         var layers: [(LayoutItem, UIImage)] = []
         for item in outfit.layout.sorted(by: { $0.zIndex < $1.zIndex }) {
@@ -441,12 +466,7 @@ struct OutfitDetailView: View {
                 context.cgContext.restoreGState()
             }
         }
-        guard let data = image.pngData() else { return }
-        do {
-            let url = FileManager.default.temporaryDirectory.appending(path: "Wearwell-\(outfit.id.uuidString).png")
-            try data.write(to: url, options: [.atomic, .completeFileProtection])
-            exportURL = url; showShareSheet = true
-        } catch { self.error = error.localizedDescription }
+        return image.pngData()
     }
 
     private func deleteOutfit() async {

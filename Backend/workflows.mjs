@@ -4,6 +4,7 @@ import { assessmentSchema, itemRecommendationSchema, outfitSchema, outfitSelecti
 import { eligibleRecommendationItems, recommendationTarget } from "./item-recommendation.mjs";
 import { inspirationPrompt, inspirationSchema } from "./inspiration.mjs";
 import { loadAssets, saveGeneratedAsset } from "./assets.mjs";
+import { hasValidOutfitComposition } from "./outfit-rules.mjs";
 
 const inventorySchema = {
   type: "object", additionalProperties: false, required: ["items"], properties: {
@@ -78,11 +79,21 @@ export function createWorkflows({ db, storage, openai }) {
       `Owned wardrobe: ${JSON.stringify(body.wardrobe)}.`
     ].join("\n\n");
     const generated = await openai.structured({ name: "outfit_candidates", prompt: generationPrompt, images, schema: outfitSchema(ids, 10, 12), userID: job.owner_id, signal });
-    const candidates = generated.value.outfits.map((item, index) => ({ ...item, candidateID: `candidate-${index + 1}` }));
+    const disliked = new Set((body.outfitFeedback || []).filter(item => item.rating === "disliked").map(item => [...(item.garmentIDs || [])].sort().join("|")));
+    const seen = new Set();
+    const candidates = generated.value.outfits.filter(item => {
+      const key = [...(item.garmentIDs || [])].sort().join("|");
+      if (!key || seen.has(key) || disliked.has(key)) return false;
+      if (body.anchorID && !(item.garmentIDs || []).includes(body.anchorID)) return false;
+      if (!hasValidOutfitComposition(item.garmentIDs,body.wardrobe,null,item.layering || [])) return false;
+      seen.add(key); return true;
+    }).map((item,index) => ({...item,candidateID:`candidate-${index + 1}`}));
+    if (candidates.length < 3) throw new Error("The generated outfits did not pass Wearwell's composition rules.");
     const criticPrompt = `Select exactly three visually coherent, distinct candidates. Do not alter garment IDs or layering. Prefer resemblance to the supplied inspiration and direct feedback over generic safety. Return specific concise titles and rationales.\n\nCandidates: ${JSON.stringify(candidates)}\nWardrobe: ${JSON.stringify(body.wardrobe)}`;
     const ranked = await openai.structured({ name: "outfit_selection", prompt: criticPrompt, images, schema: outfitSelectionSchema(candidates.map(item => item.candidateID)), userID: job.owner_id, signal });
     const byID = new Map(candidates.map(item => [item.candidateID, item]));
     const outfits = ranked.value.selections.map(item => ({ ...byID.get(item.candidateID), title: item.title, rationale: item.rationale })).filter(Boolean);
+    if (outfits.length !== 3 || new Set(outfits.map(item => item.candidateID)).size !== 3) throw new Error("The outfit critic returned an invalid selection.");
     return { result: { outfits }, usage: combineUsage(generated.usage, ranked.usage), model: generated.model, latencyMs: generated.latencyMs + ranked.latencyMs };
   }
 
@@ -91,7 +102,9 @@ export function createWorkflows({ db, storage, openai }) {
     const images = await loadAssets(db, storage, job.owner_id, body.visualAssetIDs, 16);
     const prompt = `Assess whether the wishlist candidate adds useful outfit possibilities to this exact wardrobe and style profile. Refer to the candidate with ID __candidate__; use only that ID and supplied owned garment IDs in outfits. Be candid about redundancy and styling limitations.\nCandidate: ${JSON.stringify(body.candidate)}\nWardrobe: ${JSON.stringify(body.wardrobe)}\nStyle evidence: ${JSON.stringify({ profile: body.styleProfile, inspiration: body.inspirationExamples })}`;
     const response = await openai.structured({ name: "purchase_assessment", prompt, images, schema: assessmentSchema(ids), userID: job.owner_id, signal });
-    return { result: response.value, usage: response.usage, model: response.model, latencyMs: response.latencyMs };
+    const outfits = (response.value.outfits || []).filter(item => hasValidOutfitComposition(item.garmentIDs,body.wardrobe,body.candidate,item.layering || []));
+    if (outfits.length < 3) throw new Error("The purchase outfits did not pass Wearwell's composition rules.");
+    return { result: {...response.value,outfits}, usage: response.usage, model: response.model, latencyMs: response.latencyMs };
   }
 
   async function recommendItem(job, signal) {
