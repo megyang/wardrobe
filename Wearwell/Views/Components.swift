@@ -89,6 +89,12 @@ struct EditorialHeader: View {
 struct LunaStylingNote: View {
     let rationale: String
 
+    private var containsScarfGuidance: Bool {
+        rationale.localizedCaseInsensitiveContains("scarf styling") ||
+            rationale.localizedCaseInsensitiveContains("how to wear the scarf") ||
+            rationale.localizedCaseInsensitiveContains("another way")
+    }
+
     var body: some View {
         if !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             HStack(alignment: .top, spacing: 10) {
@@ -96,7 +102,7 @@ struct LunaStylingNote: View {
                     .foregroundStyle(WearwellTheme.coral)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Luna’s styling note")
+                    Text(containsScarfGuidance ? "How to wear the scarf" : "Luna’s styling note")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(WearwellTheme.sage)
                     Text(rationale)
@@ -109,6 +115,12 @@ struct LunaStylingNote: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 14))
             .accessibilityElement(children: .combine)
+            if containsScarfGuidance {
+                Text("The collage keeps your saved product cutout; follow these directions to restyle the scarf when you wear the outfit.")
+                    .font(.caption2)
+                    .foregroundStyle(WearwellTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -121,12 +133,16 @@ func visibleLunaRationale(_ rationale: String, garmentIDs: [UUID], garments: [Ga
     }) else { return rationale }
 
     let lowered = rationale.lowercased()
-    let explicitlyStyled = lowered.contains("scarf") && [
+    let explicitlyStyled = lowered.contains("scarf") && lowered.contains("another way") && [
         "tie", "tied", "knot", "drape", "wrap", "loop", "wear", "worn", "style", "headscarf", "headband"
     ].contains { lowered.contains($0) }
     guard !explicitlyStyled else { return rationale }
 
-    let instruction = "Scarf styling: tie the \(scarf.label) loosely at the neck and let the ends drape."
+    let evidence = [scarf.label, scarf.details, scarf.observed].joined(separator: " ").lowercased()
+    let alternate = evidence.range(of: #"\b(long|skinny|thin|narrow|slim)\b"#, options: .regularExpression) != nil
+        ? "Another way: use it as a ribbon around a low ponytail and leave the ends loose."
+        : "Another way: make a small side knot at the neck instead of copying the photographed drape."
+    let instruction = "How to wear the scarf: tie the \(scarf.label) close at the neck and leave the ends long and uneven. \(alternate)"
     return [rationale.trimmingCharacters(in: .whitespacesAndNewlines), instruction]
         .filter { !$0.isEmpty }
         .joined(separator: " ")
