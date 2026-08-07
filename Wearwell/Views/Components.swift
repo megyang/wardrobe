@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 import UIKit
 
@@ -14,17 +15,61 @@ enum KeyboardController {
 
 private struct KeyboardDismissToolbar: ViewModifier {
     func body(content: Content) -> some View {
-        content.toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { KeyboardController.dismiss() }
+        content
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { KeyboardController.dismiss() }
+                        .accessibilityLabel("Dismiss keyboard")
+                }
             }
-        }
     }
 }
 
 extension View {
     func keyboardDismissToolbar() -> some View { modifier(KeyboardDismissToolbar()) }
+}
+
+/// Reorders as soon as a held card crosses another card, then commits when the
+/// drag ends. This gives grids and lists direct hold-and-slide behavior without
+/// an Edit mode or separate drag handle.
+struct DirectReorderDropDelegate: DropDelegate {
+    let targetID: UUID
+    @Binding var draggedID: UUID?
+    let move: (UUID, UUID) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID, draggedID != targetID else { return }
+        move(draggedID, targetID)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedID = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+}
+
+struct DirectStringReorderDropDelegate: DropDelegate {
+    let targetID: String
+    @Binding var draggedID: String?
+    let move: (String, String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID, draggedID != targetID else { return }
+        move(draggedID, targetID)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedID = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
 }
 
 struct EditorialHeader: View {
@@ -151,12 +196,13 @@ struct EmptyState: View {
 
 struct GarmentCard: View {
     let garment: Garment
+    @Query private var subcategories: [WardrobeSubcategory]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             CollageAssetImage(name: garment.catalogAssetName.isEmpty ? garment.sourceAssetName : garment.catalogAssetName)
                 .padding(10).frame(height: 210).frame(maxWidth: .infinity).background(WearwellTheme.previewSurface).clipShape(RoundedRectangle(cornerRadius: 16))
             Text(garment.label).font(.subheadline.weight(.semibold)).lineLimit(1)
-            Text("\(garment.color) · \(garment.subcategory?.title ?? garment.category.title)").font(.caption).foregroundStyle(WearwellTheme.muted).lineLimit(1)
+            Text("\(garment.color) · \(subcategories.title(for: garment.subcategoryRaw, fallback: garment.category))").font(.caption).foregroundStyle(WearwellTheme.muted).lineLimit(1)
         }
     }
 }

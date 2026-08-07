@@ -67,12 +67,18 @@ export function buildGlobalCatalogQueries({ query, preferences = {}, styleProfil
   const layering = cleanTerms([...(styleProfile?.layering || []), ...(styleProfile?.outfitFormula || [])], 4);
   const details = cleanTerms([...(styleProfile?.details || []), ...(styleProfile?.focalPoints || [])], 5);
   const vector = topVectorTerms(styleProfile?.vector);
+  const price = { budget: "affordable", value: "good-value", mid: "mid-priced", premium: "premium" }[preferences?.priceTier] || "mid-priced";
+  const materials = cleanTerms(preferences?.preferredMaterials, 5);
+  const quality = Number(preferences?.qualityPriority ?? 0.65) >= 0.7 ? ["substantial construction", "clear fiber composition"] : [];
+  const trend = Number(preferences?.trendPreference ?? 0.45) < 0.4 ? ["timeless"] : Number(preferences?.trendPreference) > 0.65 ? ["trend-forward"] : [];
+  const uniqueness = Number(preferences?.uniquenessPreference ?? 0.55) >= 0.65 ? ["distinctive details"] : ["versatile"];
+  const shoppingTaste = [price, ...materials, ...quality, ...trend, ...uniqueness];
   const join = values => cleanTerms(values, 12).join(", ");
   const lanes = [
     exact,
-    `${audience} clothing, core style: ${join([...vector, ...aesthetics, ...silhouettes])}`,
-    `${audience} versatile outfit-building piece, ${join([...layering, ...palette, ...silhouettes])}`,
-    `${audience} distinctive but wearable clothing, ${join([...details, ...aesthetics.slice(-3), ...palette])}`
+    `${audience} clothing, core style: ${join([...vector, ...aesthetics, ...silhouettes, ...shoppingTaste])}`,
+    `${audience} outfit-building piece, ${join([...layering, ...palette, ...silhouettes, ...shoppingTaste])}`,
+    `${audience} distinctive but wearable clothing, ${join([...details, ...aesthetics.slice(-3), ...palette, ...shoppingTaste])}`
   ];
   return [...new Set(lanes.map(value => value.replace(/,\s*$/, "").trim()).filter(value => value.length > 8))].slice(0, 4);
 }

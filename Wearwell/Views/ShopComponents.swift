@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftData
 import SwiftUI
 
@@ -53,49 +54,19 @@ enum SavedRecommendationContext {
     }
 }
 
-enum ShopProductTestState: Equatable {
-    case idle, queueing, queued, saved
-
-    var label: String {
-        switch self {
-        case .idle: "Wardrobe test"
-        case .queueing: "Queueing…"
-        case .queued: "Queued"
-        case .saved: "In Saved"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .idle: "sparkles"
-        case .queueing: "clock"
-        case .queued: "checkmark.circle.fill"
-        case .saved: "bookmark.fill"
-        }
-    }
-}
-
 struct ShopProductCard: View {
     let product: DiscoveredProductDTO
-    let test: (() -> Void)?
     let dismiss: () -> Void
     var save: (() -> Void)? = nil
     var hideRetailer: (() -> Void)? = nil
     var isSaving = false
     var isSaved = false
-    var testState: ShopProductTestState = .idle
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ZStack(alignment: .topTrailing) {
-                AsyncImage(url: URL(string: product.imageURL)) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    case .failure: ContentUnavailableView("Image unavailable", systemImage: "photo")
-                    default: ProgressView()
-                    }
-                }
+                CachedShopImage(urlString: product.imageURL)
                 .frame(maxWidth: .infinity).frame(height: 260)
                 .background(WearwellTheme.previewSurface, in: RoundedRectangle(cornerRadius: 14))
 
@@ -125,30 +96,21 @@ struct ShopProductCard: View {
             }
             Text(product.title).font(.headline)
             price
-            if !product.rationale.isEmpty { Text(product.rationale).font(.subheadline).foregroundStyle(.secondary) }
             HStack(spacing: 8) {
                 if let save {
-                    Button(action: save) {
+                    Button { if !isSaved { save() } } label: {
                         HStack(spacing: 5) {
-                            if isSaving { ProgressView() } else { Image(systemName: isSaved ? "heart.fill" : "heart") }
+                            if isSaving { ProgressView() }
+                            else {
+                                Image(systemName: isSaved ? "heart.fill" : "heart")
+                                    .foregroundStyle(isSaved ? WearwellTheme.coral : Color.primary)
+                            }
                             Text(isSaving ? "Saving…" : (isSaved ? "Saved" : "Save"))
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isSaving || isSaved)
-                }
-                if let test {
-                    Button(action: test) {
-                        HStack(spacing: 5) {
-                            if testState == .queueing { ProgressView() }
-                            else { Image(systemName: testState.icon) }
-                            Text(testState.label)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
                     .buttonStyle(.bordered)
-                    .disabled(testState != .idle)
+                    .disabled(isSaving)
                 }
                 Button { if let url = URL(string: product.canonicalURL) { openURL(url) } } label: {
                     Image(systemName: "safari").frame(width: 24, height: 24)
@@ -179,6 +141,93 @@ struct ShopProductCard: View {
         }
     }
 
+}
+
+private struct CachedShopImage: View {
+    let urlString: String
+    @State private var image: UIImage?
+    @State private var failed = false
+    @State private var reloadToken = 0
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+            } else if failed {
+                Button {
+                    reloadToken += 1
+                } label: {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Retry image").font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(WearwellTheme.sage)
+                }
+                .buttonStyle(.plain)
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: "\(urlString)|\(reloadToken)") {
+            image = nil
+            failed = false
+            guard let url = URL(string: urlString) else {
+                failed = true
+                return
+            }
+            do {
+                let data = try await ShopImageCache.shared.data(for: url)
+                guard let loaded = UIImage(data: data) else { throw ShopImageCacheError.invalidImage }
+                image = loaded
+            } catch {
+                failed = true
+            }
+        }
+    }
+}
+
+private actor ShopImageCache {
+    static let shared = ShopImageCache()
+
+    private let directory: URL
+    private var memory: [String: Data] = [:]
+
+    init() {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        directory = base.appendingPathComponent("WearwellShopImages", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func data(for url: URL) async throws -> Data {
+        let key = url.absoluteString
+        if let cached = memory[key] { return cached }
+
+        let fileURL = directory.appendingPathComponent(cacheKey(for: key)).appendingPathExtension("img")
+        if let cached = try? Data(contentsOf: fileURL), !cached.isEmpty {
+            memory[key] = cached
+            return cached
+        }
+
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 25)
+        request.setValue("image/avif,image/webp,image/apng,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard !data.isEmpty,
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) != false else {
+            throw ShopImageCacheError.invalidImage
+        }
+        memory[key] = data
+        try? data.write(to: fileURL, options: .atomic)
+        return data
+    }
+
+    private func cacheKey(for value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private enum ShopImageCacheError: Error {
+    case invalidImage
 }
 
 struct ShoppingPreferencesView: View {
@@ -212,6 +261,35 @@ struct ShoppingPreferencesView: View {
                 }
                 .pickerStyle(.segmented)
                 Text("Shop searches and ranks clothing for the selected audience. Change this before refreshing or starting a search.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Shopping taste") {
+                Picker("Price level", selection: priceTierBinding) {
+                    Text("Budget").tag("budget")
+                    Text("Value").tag("value")
+                    Text("Mid-tier").tag("mid")
+                    Text("Premium").tag("premium")
+                }
+                Picker("Fast-fashion tolerance", selection: fastFashionBinding) {
+                    Text("Avoid").tag("avoid")
+                    Text("Minimize").tag("minimize")
+                    Text("Neutral").tag("neutral")
+                    Text("Open to it").tag("open")
+                }
+                TextField("Preferred materials, comma separated", text: preferredMaterialsBinding)
+                VStack(alignment: .leading) {
+                    Text("Quality priority")
+                    Slider(value: optionalDoubleBinding(\.qualityPriority, default: 0.65), in: 0...1)
+                }
+                VStack(alignment: .leading) {
+                    Text("Timeless ↔ trendy")
+                    Slider(value: optionalDoubleBinding(\.trendPreference, default: 0.45), in: 0...1)
+                }
+                VStack(alignment: .leading) {
+                    Text("Versatile ↔ distinctive")
+                    Slider(value: optionalDoubleBinding(\.uniquenessPreference, default: 0.55), in: 0...1)
+                }
+                Text("These preferences govern retrieval and ranking. Unknown fiber content or construction is treated as uncertain, never guessed from a photo.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Catalog discovery") {
@@ -308,6 +386,24 @@ struct ShoppingPreferencesView: View {
             get: { profile.preferences.usesGlobalCatalog },
             set: { enabled in update { $0.usesGlobalCatalog = enabled } }
         )
+    }
+
+    private var priceTierBinding: Binding<String> {
+        Binding(get: { profile.preferences.selectedPriceTier }, set: { value in update { $0.selectedPriceTier = value } })
+    }
+
+    private var fastFashionBinding: Binding<String> {
+        Binding(get: { profile.preferences.fastFashionPreference ?? "minimize" }, set: { value in update { $0.fastFashionPreference = value } })
+    }
+
+    private var preferredMaterialsBinding: Binding<String> {
+        Binding(get: { profile.preferences.materialPriorities.joined(separator: ", ") }, set: { text in
+            update { $0.materialPriorities = text.split(separator: ",").map(String.init) }
+        })
+    }
+
+    private func optionalDoubleBinding(_ keyPath: WritableKeyPath<ShoppingProfileDTO, Double?>, default fallback: Double) -> Binding<Double> {
+        Binding(get: { profile.preferences[keyPath: keyPath] ?? fallback }, set: { value in update { $0[keyPath: keyPath] = value } })
     }
 
     private func listBinding(_ keyPath: WritableKeyPath<ShoppingProfileDTO, [String]>) -> Binding<String> {

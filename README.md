@@ -1,12 +1,14 @@
 # Wearwell
 
-Wearwell is a private, native iPhone wardrobe with four outfit workflows:
+Wearwell is a private, native iPhone wardrobe with connected outfit and shopping workflows:
 
 - **Manual Collage** works entirely offline.
 - **AI Style** is text-only: it selects confirmed garment IDs, then opens those
   pieces in the manual collage editor with a deterministic low-overlap layout.
-- **Shop** combines “Should I Buy This?”, personalized product discovery, and
-  verified retailer markdowns.
+- **Shop** focuses on personalized product discovery and verified retailer
+  markdowns.
+- **Saved** keeps products and wardrobe needs together, and lets you check a
+  possible purchase against outfits built from clothes you already own.
 
 The iOS app stores the wardrobe, shopping profile, purchase tests, and every
 editable collage locally. Settings supports versioned `.wearwellbackup` export

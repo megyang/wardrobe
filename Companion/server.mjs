@@ -23,7 +23,7 @@ import { BUNDLED_RETAILERS, UCP_RETAILERS, fetchProductImage, normalizeDomain } 
 import { createLiveWebShopProvider } from "./shop-provider.mjs";
 import { createUCPShopProvider } from "./ucp-provider.mjs";
 import { buildGlobalCatalogQueries, createShopifyGlobalCatalogProvider } from "./shopify-global-provider.mjs";
-import { appendFocusedComplements, appendRetailerDiverseProducts, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
+import { appendFocusedComplements, appendRetailerDiverseProducts, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, prioritizeByShoppingTaste, productRole, retailerDiverse, shoppingAudienceLabel, shouldContinueShopFeed } from "./shop-feed.mjs";
 
 const HOST = process.env.WEARWELL_HOST || "0.0.0.0";
 const PORT = Number(process.env.WEARWELL_PORT || 8791);
@@ -380,7 +380,7 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex, 
   }
 
   if (body.preferences?.globalCatalogEnabled !== false) {
-    const queries = buildGlobalCatalogQueries({
+    const queries = body.searchMode === "catalog" ? [query] : buildGlobalCatalogQueries({
       query, preferences: body.preferences, styleProfile: (body.focusInspirationIDs || []).length ? null : body.styleProfile,
       inspirationExamples: body.inspirationExamples
     });
@@ -404,7 +404,7 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex, 
     found.push(...globalFound.slice(0, 180));
   }
 
-  if (webDomains.length) {
+  if (webDomains.length && body.searchMode !== "catalog") {
     const web = createLiveWebShopProvider({
       search: (prompt, schema, context) => discoveryStructured(prompt, schema, context.signal, context.workerIndex)
     });
@@ -421,7 +421,8 @@ async function collectShopCandidates(body, query, domains, signal, workerIndex, 
     ...product,
     isPreferredRetailer: preferred.has(product.domain)
   }));
-  return retailerDiverse(deduplicateShopProducts(eligible), 120);
+  const feedback = body.searchMode === "catalog" ? {} : body.feedback;
+  return retailerDiverse(prioritizeByShoppingTaste(deduplicateShopProducts(eligible), body.preferences, feedback), 120);
 }
 
 async function revalidateGlobalProducts(products, globalCatalog, preferences, signal) {
@@ -521,14 +522,17 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       type: "object", additionalProperties: false, required: ["selections"], properties: {
         selections: { type: "array", minItems: 1, maxItems: wave.length, items: {
           type: "object", additionalProperties: false,
-          required: ["id", "rationale", "matchedWardrobeGap", "confidence", "matchedInspirationIDs", "compatibleGarmentIDs", "visualNotes", "tasteFit", "wardrobeFit", "duplicationRisk", "silhouetteFit", "colorFit", "constructionFit", "matchedPiece"],
+          required: ["id", "matchedWardrobeGap", "confidence", "matchedInspirationIDs", "compatibleGarmentIDs", "visualNotes", "tasteFit", "wardrobeFit", "materialFit", "qualityFit", "valueFit", "uniquenessFit", "trendFit", "duplicationRisk", "silhouetteFit", "colorFit", "constructionFit", "matchedPiece"],
           properties: {
-            id: { type: "string", enum: ids }, rationale: { type: "string" }, matchedWardrobeGap: { type: "string" },
+            id: { type: "string", enum: ids }, matchedWardrobeGap: { type: "string" },
             confidence: { type: "number", minimum: 0, maximum: 1 },
             matchedInspirationIDs: { type: "array", maxItems: 4, items: { type: "string" } },
             compatibleGarmentIDs: { type: "array", maxItems: 8, items: { type: "string" } },
             visualNotes: { type: "string" }, tasteFit: { type: "number", minimum: 0, maximum: 1 },
             wardrobeFit: { type: "number", minimum: 0, maximum: 1 }, duplicationRisk: { type: "number", minimum: 0, maximum: 1 },
+            materialFit: { type: "number", minimum: 0, maximum: 1 }, qualityFit: { type: "number", minimum: 0, maximum: 1 },
+            valueFit: { type: "number", minimum: 0, maximum: 1 }, uniquenessFit: { type: "number", minimum: 0, maximum: 1 },
+            trendFit: { type: "number", minimum: 0, maximum: 1 },
             silhouetteFit: { type: "number", minimum: 0, maximum: 1 }, colorFit: { type: "number", minimum: 0, maximum: 1 },
             constructionFit: { type: "number", minimum: 0, maximum: 1 }, matchedPiece: { type: "string" }
           }
@@ -540,6 +544,7 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
       `Hard audience constraint: select only ${shoppingAudienceLabel(body.preferences)} clothing. Do not select products for another audience.`,
       "Use the actual attached product pictures together with the labeled inspiration and owned-wardrobe contact sheets. Inspect silhouette, proportions, visible texture, fabric weight, palette, print scale, detail density, and layering role. Text is supporting evidence, not a substitute for looking.",
       "Prioritize demonstrated inspiration fit, compatibility with several exact owned garments, a useful wardrobe gap, versatility, shopping constraints, then markdown. Penalize visual duplicates and pieces that only match generic keywords.",
+      "Treat the Shopping Profile as the user's shopping philosophy, not optional flavor. Score its price tier, preferred materials, quality priority, trend appetite, uniqueness preference, and fast-fashion tolerance independently. Fiber claims require catalog text; never infer cotton or ethical production from an image. Unknown composition or construction lowers confidence. Do not label a retailer ethical or fast fashion without supplied evidence.",
       "Use isPreferredRetailer only as a modest tie-breaker after visual and wardrobe fit. Never let a preferred store dominate a page or rescue a weak product.",
       (body.focusGarmentIDs || []).length
         ? `This is an outfit-specific request. Judge each product primarily by how well it completes the exact owned garment IDs ${JSON.stringify(body.focusGarmentIDs)}; return actual products, not general wardrobe-gap advice.`
@@ -551,8 +556,9 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
         : inspirationFocused
           ? "First identify one specific visible garment in the exact inspiration photo that the product is meant to match. Compare that pair directly. Score silhouetteFit for cut, length, volume, neckline or rise, and proportion; colorFit for the actual dominant color and print; and constructionFit for material behavior, texture, trim, closures, and details. Reject generic approximations, category-only matches, and products that match a different aesthetic but not a pictured garment. Do not inflate scores to fill the requested result count."
           : "Use saved wardrobe categories as authoritative inventory metadata.",
-      "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. Keep the rationale candid and specific; visualNotes should briefly record the decisive visible evidence.",
+      "Return supplied product IDs only. matchedInspirationIDs and compatibleGarmentIDs must use IDs from the evidence legend. visualNotes are internal ranking evidence and must be factual, brief, and conservative.",
       `Request: ${query}. Preferences: ${JSON.stringify(body.preferences || {})}.`,
+      `Coarse local interaction signals (saved versus dismissed): ${JSON.stringify(body.feedback || {})}. Use these as weak evidence, never as hard rules.`,
       `Style profile: ${JSON.stringify(body.styleProfile || null)}. Inspiration analyses: ${JSON.stringify(body.inspirationExamples || [])}.`,
       `Owned wardrobe metadata: ${JSON.stringify((body.wardrobe || []).slice(0, 250))}.`,
       `This wave: ${JSON.stringify(wave.map(({ description, ...item }) => ({ ...item, description })))}.`,
@@ -561,17 +567,28 @@ async function rankShopWave(body, query, wave, published, evidence, signal, work
     ].join("\n\n");
     const ranked = await structured(prompt, [...evidence.files, ...visuals.files], rankingSchema, signal, workerIndex);
     const byID = new Map(wave.map(item => [item.id, item])); const used = new Set(); const products = [];
-    for (const selection of ranked.selections || []) {
+    const qualityPriority = Math.max(0, Math.min(1, Number(body.preferences?.qualityPriority ?? 0.65)));
+    const uniquenessPreference = Math.max(0, Math.min(1, Number(body.preferences?.uniquenessPreference ?? 0.55)));
+    const preferredMaterials = (body.preferences?.preferredMaterials || []).filter(Boolean);
+    const orderedSelections = [...(ranked.selections || [])].sort((a, b) => {
+      const score = value => value.tasteFit * 0.22 + value.wardrobeFit * 0.22 + value.materialFit * (0.08 + preferredMaterials.length * 0.05) +
+        value.qualityFit * (0.08 + qualityPriority * 0.10) + value.uniquenessFit * (0.05 + uniquenessPreference * 0.08) +
+        value.valueFit * 0.07 + value.constructionFit * 0.06 + value.trendFit * 0.04 - value.duplicationRisk * 0.18;
+      return score(b) - score(a);
+    });
+    for (const selection of orderedSelections) {
       const item = byID.get(selection.id); if (!item || used.has(item.id)) continue;
       const minimumTaste = inspirationFocused ? 0.68 : (focused ? 0.62 : 0.56);
       const minimumWardrobeFit = inspirationFocused ? 0.25 : (focused ? 0.62 : 0.52);
       const maximumDuplication = focused ? 0.36 : 0.48;
       if (selection.tasteFit < minimumTaste || selection.wardrobeFit < minimumWardrobeFit || selection.duplicationRisk > maximumDuplication) continue;
+      if (qualityPriority >= 0.75 && selection.qualityFit < 0.48) continue;
+      if (preferredMaterials.length && selection.materialFit < 0.42) continue;
       if (inspirationFocused && !passesFocusedInspirationMatch(selection, body.focusInspirationIDs)) continue;
       used.add(item.id);
       products.push({
         ...item, confidence: Math.min(item.confidence, selection.confidence),
-        rationale: String(selection.rationale).slice(0, 300), matchedWardrobeGap: String(selection.matchedWardrobeGap).slice(0, 200),
+        rationale: "", matchedWardrobeGap: String(selection.matchedWardrobeGap).slice(0, 200),
         matchedInspirationIDs: (selection.matchedInspirationIDs || []).map(String).filter(id => inspirationIDs.has(id)).slice(0, 4),
         compatibleGarmentIDs: (selection.compatibleGarmentIDs || []).map(String).filter(id => garmentIDs.has(id)).slice(0, 8),
         visualNotes: String(selection.visualNotes || "").slice(0, 300)
@@ -604,6 +621,20 @@ async function discoverShop(body, signal = null, workerIndex = null, onProgress 
   const candidates = await collectShopCandidates(body, discoveryQuery, domains, signal, workerIndex, globalCatalog);
   if (!candidates.length) throw new Error("No selected store returned verifiable products. Try another request or store.");
   const generatedAt = new Date().toISOString(); const products = []; let publishedVisibleCount = 0;
+  if (body.searchMode === "catalog") {
+    for (let offset = 0; offset < candidates.length && products.length < resultLimit; offset += 12) {
+      const verified = await revalidateGlobalProducts(candidates.slice(offset, offset + 12), globalCatalog, body.preferences, signal);
+      appendRetailerDiverseProducts(products, verified.map(product => ({
+        ...product, rationale: "", matchedWardrobeGap: "", matchedInspirationIDs: [], compatibleGarmentIDs: [], visualNotes: null
+      })), resultLimit, 2, 4);
+      await onProgress({
+        result: { query, generatedAt, products }, stage: "Loading catalog results",
+        completed: products.length, total: Math.min(resultLimit, candidates.length), estimatedSecondsRemaining: 0
+      });
+    }
+    if (!products.length) throw new Error("No currently available catalog products matched that search.");
+    return { query, generatedAt, products: products.slice(0, resultLimit) };
+  }
   const evidence = await materializeEvidenceBoards(body);
   try {
     for (let offset = 0; offset < candidates.length && products.length < resultLimit; offset += 12) {
@@ -655,7 +686,7 @@ async function generateImageInHome(prompt, images, parentSignal, workerIndex) {
     const before = new Set((await walkImages(outputRoot)).map(item => item.path)); const started = Date.now();
     await withAbortTimeout(
       IMAGE_TIMEOUT_MS,
-      "Catalog image generation timed out. The source photo will be used instead.",
+      "Catalog cutout generation timed out.",
       signal => thread(workerIndex).run([{ type: "text", text: `${prompt}\n\nYou must use image generation and produce exactly one image artifact. Do not stop at a description.` }, ...images.map(file => ({ type: "local_image", path: file }))], { signal }),
       parentSignal
     );
@@ -678,10 +709,10 @@ async function analyze(body, reportProgress = async () => {}, signal = null, wor
   try {
     await reportProgress({ stage: files.length > 1 ? `Analyzing ${files.length} photos` : "Analyzing photo", progressCompleted: 0, progressTotal: null, estimatedSecondsRemaining: INITIAL_ANALYSIS_ESTIMATE_SECONDS });
     const inventoryInstruction = body.sameItem && files.length > 1
-      ? "These photos are different views of the same single clothing item. Analyze them together and return exactly one inventory item, combining only details that are visibly supported across the views. Ignore other garments that appear incidentally."
-      : "Inventory every deliberately shown or worn clothing item visible in this image.";
+      ? "These photos are different views of the same single wardrobe item. Analyze them together and return exactly one inventory item, combining only details that are visibly supported across the views. Ignore other wardrobe items that appear incidentally."
+      : "Inventory every deliberately shown or worn wardrobe item visible in this image, including clothing, shoes, purses, and jewelry.";
     const result = await structured(
-      `${inventoryInstruction} Exclude the person, background, bags, and jewelry. Describe only visible evidence and explicitly list unknown details. Never invent logos, text, pockets, trim, fasteners, materials, or construction. Give each item a conservative fingerprint from visible color, material, silhouette, and distinctive marks. Choose exactly one matching subcategory: tops use long_sleeve, tank_top, t_shirt, sleeveless, or blouse; bottoms use shorts, mini_skirt, midi_skirt, maxi_skirt, or pants; outerwear uses coverup, sweater, jacket, or coat; accessories use tights, hat, or misc. Dresses and shoes use none. Use mini_skirt for hems above the knee, midi_skirt for hems from around the knee through mid-calf, and maxi_skirt for ankle- or floor-length skirts. Use none when the visible evidence does not establish a skirt's length. Prefer blouse for a visibly blouse-like woven or dress top, tank_top for a tank silhouette, t_shirt for a tee, sleeveless for another sleeveless top, and long_sleeve for another long-sleeved top.`,
+      `${inventoryInstruction} Exclude the person and background. Include a purse or piece of jewelry only when it is deliberately shown, worn clearly enough to identify as a distinct item, or is a prominent part of the outfit; ignore tiny, occluded, or ambiguous accessories. Describe only visible evidence and explicitly list unknown details. Never invent logos, text, pockets, trim, fasteners, hardware, gemstones, materials, or construction. Give each item a conservative fingerprint from visible color, material, silhouette, and distinctive marks. Choose exactly one matching subcategory: tops use long_sleeve, tank_top, t_shirt, sleeveless, or blouse; bottoms use shorts, mini_skirt, midi_skirt, maxi_skirt, or pants; outerwear uses coverup, sweater, jacket, or coat; accessories use tights, hat, purse, jewelry, or misc. Use purse for handbags, totes, clutches, crossbody bags, shoulder bags, and small fashion backpacks. Use jewelry for necklaces, earrings, bracelets, rings, brooches, and anklets. Dresses and shoes use none. Use mini_skirt for hems above the knee, midi_skirt for hems from around the knee through mid-calf, and maxi_skirt for ankle- or floor-length skirts. Use none when the visible evidence does not establish a skirt's length. Prefer blouse for a visibly blouse-like woven or dress top, tank_top for a tank silhouette, t_shirt for a tee, sleeveless for another sleeveless top, and long_sleeve for another long-sleeved top.`,
       files, inventorySchema, signal, workerIndex
     );
     const items = [];
@@ -703,7 +734,7 @@ async function analyze(body, reportProgress = async () => {}, signal = null, wor
         try {
           const image = await generatedImage(catalogPrompt(item), files, signal, workerIndex);
           catalogImageBase64 = image.toString("base64");
-        } catch { /* the app will show the source image for review */ }
+        } catch { /* a missing cutout keeps the import from completing */ }
         completedCutouts += 1;
       }
       items.push({ ...item, subcategory: normalizeSubcategory(item.category, item.subcategory), id: randomUUID(), catalogImageBase64, modelVersion: MODEL });
@@ -873,8 +904,8 @@ async function assess(body, signal = null, workerIndex = null) {
 }
 
 async function recommendItem(body, signal = null, workerIndex = null) {
-  const target = recommendationTarget({ category: body.category, subcategory: body.subcategory });
   const wardrobe = Array.isArray(body.wardrobe) ? body.wardrobe : [];
+  const target = recommendationTarget({ category: body.category, subcategory: body.subcategory }, wardrobe);
   const selectedIDs = Array.isArray(body.selectedGarmentIDs) ? body.selectedGarmentIDs : [];
   const eligible = eligibleRecommendationItems(wardrobe, selectedIDs, target)
     .filter(item => canCompleteFocusedOutfit(item, wardrobe, selectedIDs));

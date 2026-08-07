@@ -26,6 +26,12 @@ struct ShoppingProfileDTO: Codable, Equatable {
     var clothingAudience: String? = ShoppingAudience.women.rawValue
     var globalCatalogEnabled: Bool? = true
     var excludedRetailerDomains: [String]? = []
+    var priceTier: String? = "mid"
+    var preferredMaterials: [String]? = ["cotton"]
+    var qualityPriority: Double? = 0.8
+    var trendPreference: Double? = 0.35
+    var uniquenessPreference: Double? = 0.7
+    var fastFashionPreference: String? = "minimize"
     var dismissedProductIDs: [String] = []
     var bundledRetailerVersion: Int? = ShoppingRetailer.currentDefaultsVersion
 
@@ -48,10 +54,28 @@ struct ShoppingProfileDTO: Codable, Equatable {
         set { excludedRetailerDomains = Array(Set(newValue.compactMap(ShoppingRetailer.normalizedDomain))).sorted() }
     }
 
+    var materialPriorities: [String] {
+        get { preferredMaterials ?? [] }
+        set { preferredMaterials = Array(Set(newValue.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })).sorted() }
+    }
+
+    var selectedPriceTier: String {
+        get { ["budget", "value", "mid", "premium"].contains(priceTier ?? "") ? priceTier! : "mid" }
+        set { priceTier = newValue }
+    }
+
     var selectedAudience: ShoppingAudience {
         get { ShoppingAudience(rawValue: clothingAudience ?? "") ?? .women }
         set { clothingAudience = newValue.rawValue }
     }
+}
+
+struct ShoppingFeedbackDTO: Codable, Equatable {
+    var savedDomains: [String] = []
+    var savedCategories: [String] = []
+    var savedColors: [String] = []
+    var dismissedDomains: [String] = []
+    var dismissedCategories: [String] = []
 }
 
 struct ShoppingRetailer: Identifiable, Equatable {
@@ -92,7 +116,7 @@ struct ShoppingRetailer: Identifiable, Equatable {
         ShoppingRetailer(name: "COS", domain: "cos.com", source: .web)
     ]
     static let bundled = ucp + web
-    static let currentDefaultsVersion = 3
+    static let currentDefaultsVersion = 4
 
     static func applyBundledUpdates(to profile: inout ShoppingProfileDTO) -> Bool {
         guard (profile.bundledRetailerVersion ?? 1) < currentDefaultsVersion else { return false }
@@ -104,6 +128,12 @@ struct ShoppingRetailer: Identifiable, Equatable {
                 profile.preferredRetailers.append(domain)
             }
         }
+        if profile.priceTier == nil { profile.priceTier = "mid" }
+        if profile.preferredMaterials == nil { profile.preferredMaterials = ["cotton"] }
+        if profile.qualityPriority == nil { profile.qualityPriority = 0.8 }
+        if profile.trendPreference == nil { profile.trendPreference = 0.35 }
+        if profile.uniquenessPreference == nil { profile.uniquenessPreference = 0.7 }
+        if profile.fastFashionPreference == nil { profile.fastFashionPreference = "minimize" }
         profile.bundledRetailerVersion = currentDefaultsVersion
         return true
     }

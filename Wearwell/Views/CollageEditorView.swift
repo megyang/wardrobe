@@ -12,6 +12,7 @@ struct CollageEditorView: View {
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
     @Query private var styleProfiles: [StyleProfile]
     @Query private var inspirations: [InspirationLook]
+    @Query private var subcategories: [WardrobeSubcategory]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -20,7 +21,7 @@ struct CollageEditorView: View {
     @State private var showPicker = false
     @State private var pickerSearch = ""
     @State private var pickerCategory: GarmentCategory?
-    @State private var pickerSubcategory: GarmentSubcategory?
+    @State private var pickerSubcategory: String?
     @State private var selectedID: UUID?
     @State private var preparing: Bool
     @State private var preparedCount = 0
@@ -185,9 +186,9 @@ struct CollageEditorView: View {
                         Button { requestRecommendation(category: category, subcategory: nil) } label: {
                             Label("All \(category.title)", systemImage: "square.grid.2x2")
                         }
-                        ForEach(GarmentSubcategory.options(for: category)) { subcategory in
-                            Button { requestRecommendation(category: category, subcategory: subcategory) } label: {
-                                Text(subcategory.title)
+                        ForEach(subcategories.options(for: category)) { subcategory in
+                            Button { requestRecommendation(category: category, subcategory: subcategory.value) } label: {
+                                Text(subcategory.name)
                             }
                         }
                     }
@@ -230,21 +231,21 @@ struct CollageEditorView: View {
     private var filteredGarments: [Garment] {
         garments.filter { garment in
             (pickerCategory == nil || garment.category == pickerCategory) &&
-            (pickerSubcategory == nil || garment.subcategory == pickerSubcategory) &&
-            matchesPickerSearch(label: garment.label, color: garment.color, category: garment.category, subcategory: garment.subcategory)
+            (pickerSubcategory == nil || garment.subcategoryRaw == pickerSubcategory) &&
+            matchesPickerSearch(label: garment.label, color: garment.color, category: garment.category, subcategoryRaw: garment.subcategoryRaw)
         }
     }
 
     private var showsWishlistCandidate: Bool {
         guard let candidate = wishlistItem else { return false }
         return (pickerCategory == nil || candidate.category == pickerCategory) &&
-            (pickerSubcategory == nil || candidate.subcategory == pickerSubcategory) &&
-            matchesPickerSearch(label: candidate.label, color: candidate.color, category: candidate.category, subcategory: candidate.subcategory)
+            (pickerSubcategory == nil || candidate.subcategoryRaw == pickerSubcategory) &&
+            matchesPickerSearch(label: candidate.label, color: candidate.color, category: candidate.category, subcategoryRaw: candidate.subcategoryRaw)
     }
 
-    private func matchesPickerSearch(label: String, color: String, category: GarmentCategory, subcategory: GarmentSubcategory?) -> Bool {
+    private func matchesPickerSearch(label: String, color: String, category: GarmentCategory, subcategoryRaw: String?) -> Bool {
         guard !pickerSearch.isEmpty else { return true }
-        return [label, color, category.title, subcategory?.title ?? ""]
+        return [label, color, category.title, subcategories.title(for: subcategoryRaw, fallback: category)]
             .joined(separator: " ")
             .localizedCaseInsensitiveContains(pickerSearch)
     }
@@ -261,14 +262,14 @@ struct CollageEditorView: View {
                     }
                 }
             }
-            if let pickerCategory, !GarmentSubcategory.options(for: pickerCategory).isEmpty {
+            if let pickerCategory, !subcategories.options(for: pickerCategory).isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         Button("All types") { pickerSubcategory = nil }
                             .buttonStyle(FilterButtonStyle(selected: pickerSubcategory == nil))
-                        ForEach(GarmentSubcategory.options(for: pickerCategory)) { subcategory in
-                            Button(subcategory.filterTitle) { pickerSubcategory = subcategory }
-                                .buttonStyle(FilterButtonStyle(selected: pickerSubcategory == subcategory))
+                        ForEach(subcategories.options(for: pickerCategory)) { subcategory in
+                            Button(subcategory.name) { pickerSubcategory = subcategory.value }
+                                .buttonStyle(FilterButtonStyle(selected: pickerSubcategory == subcategory.value))
                         }
                     }
                 }
@@ -301,7 +302,7 @@ struct CollageEditorView: View {
     }
     private func add(_ garment: Garment) { let z = (items.map(\.zIndex).max() ?? 0) + 1; items.append(LayoutItem(garmentID: garment.id, x: 0.5, y: 0.5, zIndex: z)) }
     private func add(_ candidate: WishlistItem) { let z = (items.map(\.zIndex).max() ?? 0) + 1; items.append(LayoutItem(wishlistItemID: candidate.id, x: 0.5, y: 0.5, zIndex: z)) }
-    private func requestRecommendation(category: GarmentCategory, subcategory: GarmentSubcategory?) {
+    private func requestRecommendation(category: GarmentCategory, subcategory: String?) {
         showRecommendationPicker = false
         Task { await recommend(category: category, subcategory: subcategory) }
     }
@@ -334,16 +335,16 @@ struct CollageEditorView: View {
         outfitShopQuery = "Find 2–6 specific products to complete this exact outfit: \(description). Saved categories are authoritative even if a picture could be interpreted differently. \(requiredFoundation) Use at most one recommendation for each top, bottom, dress, outerwear, or shoe slot; prioritize useful layers and accessories for the remaining suggestions."
         showShopRecommendations = true
     }
-    private func recommend(category: GarmentCategory?, subcategory: GarmentSubcategory?) async {
+    private func recommend(category: GarmentCategory?, subcategory: String?) async {
         guard companion.isPaired else {
             recommendationNotice = "Pair with the Mac companion in Settings before asking Luna."
             return
         }
         let selectedIDs = Array(Set(items.compactMap(\.garmentID)))
         let eligible = garments.filter {
-            (category == nil || $0.category == category) && (subcategory == nil || $0.subcategory == subcategory) && !selectedIDs.contains($0.id)
+            (category == nil || $0.category == category) && (subcategory == nil || $0.subcategoryRaw == subcategory) && !selectedIDs.contains($0.id)
         }
-        let targetName = subcategory?.title ?? category?.title ?? "pieces"
+        let targetName = subcategories.title(for: subcategory, fallback: category ?? .tops)
         guard !eligible.isEmpty else {
             recommendationNotice = "There are no unused \(targetName.lowercased()) in your wardrobe."
             return

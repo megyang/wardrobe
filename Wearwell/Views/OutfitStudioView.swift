@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct OutfitStudioView: View {
     @Binding var showSettings: Bool
@@ -11,9 +12,16 @@ struct OutfitStudioView: View {
     @Query private var candidates: [WishlistItem]
     @Query(sort: \ShopFeedSnapshot.generatedAt, order: .reverse) private var productFeeds: [ShopFeedSnapshot]
     @Query(sort: \StyleGeneration.createdAt, order: .reverse) private var studioGenerations: [StyleGeneration]
-    @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
+    @Environment(\.modelContext) private var context
     @State private var studioSection = "outfits"
-    private var savedOutfits: [Outfit] { outfits.filter(\.belongsInOutfitLibrary) }
+    @State private var draggedOutfitID: UUID?
+    private var savedOutfits: [Outfit] {
+        outfits.filter(\.belongsInOutfitLibrary).sorted {
+            let lhs = $0.manualOrder ?? Int.min
+            let rhs = $1.manualOrder ?? Int.min
+            return lhs == rhs ? $0.updatedAt > $1.updatedAt : lhs < rhs
+        }
+    }
     private var outfitProductFeeds: [ShopFeedSnapshot] { productFeeds.filter(\.belongsInStudioResults) }
 
     var body: some View {
@@ -90,31 +98,29 @@ struct OutfitStudioView: View {
                             }
                         }.padding(.top, 8)
                     } else if !savedOutfits.isEmpty {
-                        HStack(alignment: .center) {
-                            Text("Saved outfits").font(.title2.bold())
-                            Spacer()
-                            Picker("Saved outfit view", selection: $savedOutfitViewMode) {
-                                Label("Gallery", systemImage: "square.grid.2x2").tag("gallery")
-                                Label("Names", systemImage: "list.bullet").tag("names")
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 205)
-                        }
-                        .padding(.top, 8)
+                        Text("Saved outfits").font(.title2.bold())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
 
-                        if savedOutfitViewMode == "names" {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
                             ForEach(savedOutfits) { outfit in
-                                NavigationLink { OutfitDetailView(outfit: outfit) } label: { OutfitRow(outfit: outfit) }
-                                    .buttonStyle(.plain)
-                            }
-                        } else {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 14) {
-                                ForEach(savedOutfits) { outfit in
-                                    NavigationLink { OutfitDetailView(outfit: outfit) } label: {
-                                        OutfitGalleryCard(outfit: outfit, garments: garments, candidate: candidate(for: outfit))
-                                    }
-                                    .buttonStyle(.plain)
+                                NavigationLink { OutfitDetailView(outfit: outfit) } label: {
+                                    OutfitGalleryCard(outfit: outfit, garments: garments, candidate: candidate(for: outfit))
                                 }
+                                .buttonStyle(.plain)
+                                .onDrag {
+                                    draggedOutfitID = outfit.id
+                                    return NSItemProvider(object: outfit.id.uuidString as NSString)
+                                }
+                                .onDrop(
+                                    of: [.text],
+                                    delegate: DirectReorderDropDelegate(
+                                        targetID: outfit.id,
+                                        draggedID: $draggedOutfitID,
+                                        move: moveOutfit
+                                    )
+                                )
+                                .opacity(draggedOutfitID == outfit.id ? 0.62 : 1)
                             }
                         }
                     } else {
@@ -140,6 +146,18 @@ struct OutfitStudioView: View {
     private func candidate(for outfit: Outfit) -> WishlistItem? {
         guard let id = outfit.wishlistItemID else { return nil }
         return candidates.first { $0.id == id }
+    }
+
+    private func moveOutfit(_ sourceID: UUID, _ targetID: UUID) {
+        var values = savedOutfits
+        guard let source = values.firstIndex(where: { $0.id == sourceID }),
+              let target = values.firstIndex(where: { $0.id == targetID }),
+              source != target else { return }
+        withAnimation(.snappy) {
+            values.move(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+            for (index, outfit) in values.enumerated() { outfit.manualOrder = index }
+        }
+        try? context.save()
     }
 
     private func focusLabel(for feed: ShopFeedSnapshot) -> String {
@@ -187,7 +205,6 @@ private struct OutfitProductResultsView: View {
                 ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }.prefix(6)) { product in
                     ShopProductCard(
                         product: product,
-                        test: nil,
                         dismiss: { delete(product) },
                         save: { Task { await save(product) } },
                         isSaving: savingProductIDs.contains(product.id),
@@ -307,18 +324,6 @@ private struct StudioActionCard: View {
     }
 }
 
-private struct OutfitRow: View {
-    let outfit: Outfit
-    var body: some View {
-        HStack {
-            Image(systemName: outfit.origin == .manual ? "hand.draw" : outfit.origin == .aiStyle ? "sparkles" : "bag")
-                .foregroundStyle(WearwellTheme.sage).frame(width: 44, height: 44).background(WearwellTheme.sage.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading) { Text(outfit.title).font(.headline); Text("\(outfit.layout.count) pieces · \(outfit.originRaw)").font(.caption).foregroundStyle(.secondary) }
-            Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-        }.padding().background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
-    }
-}
-
 private struct OutfitGalleryCard: View {
     let outfit: Outfit
     let garments: [Garment]
@@ -415,7 +420,6 @@ struct AIStyleView: View {
                             } label: {
                                 VStack(alignment: .leading) {
                                     Text(suggestion.title).font(.headline)
-                                    Text(suggestion.rationale).font(.caption).foregroundStyle(.secondary)
                                     Label("Open \(suggestion.garmentIDs.count) pieces in manual editor", systemImage: "hand.draw").font(.caption2).foregroundStyle(WearwellTheme.sage)
                                 }
                             }
@@ -596,7 +600,7 @@ struct OutfitDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                EditorialHeader(eyebrow: outfit.originRaw, title: outfit.title, subtitle: outfit.rationale.isEmpty ? "An editable outfit from your wardrobe." : outfit.rationale)
+                EditorialHeader(eyebrow: outfit.originRaw, title: outfit.title, subtitle: outfit.rationale.isEmpty ? "An editable outfit from your wardrobe." : outfit.rationale, compact: true)
                 CollagePreview(items: outfit.layout, garments: garments, candidate: candidate).frame(height: 430)
                 NavigationLink {
                     CollageEditorView(outfit: outfit, wishlistItem: candidate)

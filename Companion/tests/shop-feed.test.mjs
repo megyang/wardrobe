@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowsShoppingAudience, appendFocusedComplements, appendRetailerDiverseProducts, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
+import { allowsShoppingAudience, appendFocusedComplements, appendRetailerDiverseProducts, appendStableProducts, audienceConstrainedQuery, canCompleteFocusedOutfit, deduplicateShopProducts, focusedInspirationSearchBrief, focusedOutfitRoleState, inspirationRequestedRole, passesFocusedInspirationMatch, passesShoppingConstraints, prioritizeByShoppingTaste, productRole, retailerDiverse, shouldContinueShopFeed } from "../shop-feed.mjs";
 
 test("retailer diversity round-robins stores instead of exhausting one catalog", () => {
   const products = [
@@ -46,6 +46,29 @@ test("feed keeps building to forty and stops low-confidence expansion after fort
   assert.equal(shouldContinueShopFeed({ publishedCount: 48, candidatesRemaining: 12, lastWaveConfidence: 0.54 }), false);
   assert.equal(shouldContinueShopFeed({ publishedCount: 48, candidatesRemaining: 12, lastWaveConfidence: 0.8 }), true);
   assert.equal(shouldContinueShopFeed({ publishedCount: 60, candidatesRemaining: 10, lastWaveConfidence: 1 }), false);
+});
+
+test("shopping taste prioritizes natural-fiber distinctive mid-tier products", () => {
+  const products = [
+    { id: "trend", domain: "cheap.example", title: "Viral polyester cutout top", description: "100% polyester", category: "tops", currentPrice: 18 },
+    { id: "cotton", domain: "quality.example", title: "Asymmetric cotton blouse", description: "Midweight 100% cotton woven fabric", category: "tops", currentPrice: 128 }
+  ];
+  const preferences = { priceTier: "mid", preferredMaterials: ["cotton"], qualityPriority: 0.9, trendPreference: 0.2, uniquenessPreference: 0.8 };
+  assert.deepEqual(prioritizeByShoppingTaste(products, preferences).map(item => item.id), ["cotton", "trend"]);
+});
+
+test("shopping constraints reject explicit material exclusions and category budgets", () => {
+  assert.equal(passesShoppingConstraints({ title: "Polyester dress", category: "dresses", currentPrice: 80 }, { excludedMaterials: ["polyester"] }), false);
+  assert.equal(passesShoppingConstraints({ title: "Cotton dress", category: "dresses", currentPrice: 180 }, { budgets: { dresses: 150 } }), false);
+});
+
+test("saved and dismissed behavior is a weak local ranking signal", () => {
+  const products = [
+    { id: "dismissed", domain: "dismissed.example", title: "Cotton shirt", category: "tops", currentPrice: 90 },
+    { id: "saved", domain: "saved.example", title: "Cotton shirt", category: "tops", currentPrice: 90 }
+  ];
+  const ranked = prioritizeByShoppingTaste(products, { preferredMaterials: ["cotton"] }, { savedDomains: ["saved.example"], dismissedDomains: ["dismissed.example"] });
+  assert.deepEqual(ranked.map(item => item.id), ["saved", "dismissed"]);
 });
 
 test("audience preference supports women's, unisex, and men's clothing", () => {

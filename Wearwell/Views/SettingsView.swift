@@ -92,6 +92,15 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if let backupMessage { Text(backupMessage).font(.caption).foregroundStyle(WearwellTheme.sage) }
             }
+            Section("Wardrobe organization") {
+                NavigationLink {
+                    SubcategorySettingsView()
+                } label: {
+                    Label("My subcategories", systemImage: "tag")
+                }
+                Text("Create, rename, and remove the types that appear in your wardrobe. These are stored only with your personal Wearwell data.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Connection") {
                 LabeledContent("Status") { StatusPill(text: companion.status.label, color: companion.status == .available ? WearwellTheme.sage : WearwellTheme.coral) }
                 if let found = companion.discoveredHost {
@@ -195,5 +204,185 @@ struct SettingsView: View {
             let result = try await BackupService.restore(document, context: context)
             backupMessage = result.summary
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+struct SubcategorySettingsView: View {
+    @Query(sort: [SortDescriptor(\WardrobeSubcategory.categoryRaw), SortDescriptor(\WardrobeSubcategory.sortOrder)])
+    private var subcategories: [WardrobeSubcategory]
+    @Query private var garments: [Garment]
+    @Query private var wishlistItems: [WishlistItem]
+    @Query private var purchaseNeeds: [PurchaseNeed]
+    @Environment(\.modelContext) private var context
+    @State private var showingAdd = false
+    @State private var editing: WardrobeSubcategory?
+    @State private var pendingDelete: WardrobeSubcategory?
+    @State private var draggedSubcategoryID: UUID?
+
+    var body: some View {
+        List {
+            ForEach(GarmentCategory.allCases) { category in
+                let values = subcategories.options(for: category)
+                Section(category.title) {
+                    if values.isEmpty {
+                        Text("No subcategories").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(values) { item in
+                            HStack {
+                                Button { editing = item } label: {
+                                    Text(item.name).foregroundStyle(.primary)
+                                    Spacer()
+                                    Image(systemName: "pencil").foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.plain)
+                                Button(role: .destructive) { pendingDelete = item } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                        .frame(width: 32, height: 32)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Delete \(item.name)")
+                            }
+                            .swipeActions {
+                                Button("Delete", systemImage: "trash", role: .destructive) {
+                                    pendingDelete = item
+                                }
+                            }
+                            .onDrag {
+                                draggedSubcategoryID = item.id
+                                return NSItemProvider(object: item.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: DirectReorderDropDelegate(
+                                    targetID: item.id,
+                                    draggedID: $draggedSubcategoryID,
+                                    move: { source, target in move(category: category, sourceID: source, targetID: target) }
+                                )
+                            )
+                            .opacity(draggedSubcategoryID == item.id ? 0.62 : 1)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("My subcategories")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showingAdd = true } label: { Label("Add subcategory", systemImage: "plus") }
+            }
+        }
+        .sheet(isPresented: $showingAdd) {
+            NavigationStack { SubcategoryEditorView() }
+                .keyboardDismissToolbar()
+        }
+        .sheet(item: $editing) { item in
+            NavigationStack { SubcategoryEditorView(subcategory: item) }
+                .keyboardDismissToolbar()
+        }
+        .confirmationDialog(
+            "Delete \(pendingDelete?.name ?? "this subcategory")?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete subcategory", role: .destructive) {
+                if let pendingDelete { delete(pendingDelete) }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text(deleteMessage)
+        }
+    }
+
+    private var deleteMessage: String {
+        guard let value = pendingDelete?.value else { return "" }
+        let count = garments.filter { $0.subcategoryRaw == value }.count
+            + wishlistItems.filter { $0.subcategoryRaw == value }.count
+            + purchaseNeeds.filter { $0.subcategoryRaw == value }.count
+        return count == 0
+            ? "This removes it from your personal list."
+            : "This also marks \(count) item\(count == 1 ? "" : "s") as having no subcategory. The items themselves will not be deleted."
+    }
+
+    private func delete(_ subcategory: WardrobeSubcategory) {
+        let value = subcategory.value
+        garments.filter { $0.subcategoryRaw == value }.forEach { $0.subcategoryRaw = nil }
+        wishlistItems.filter { $0.subcategoryRaw == value }.forEach { $0.subcategoryRaw = nil }
+        purchaseNeeds.filter { $0.subcategoryRaw == value }.forEach { $0.subcategoryRaw = nil }
+        context.delete(subcategory)
+        try? context.save()
+        pendingDelete = nil
+    }
+
+    private func move(category: GarmentCategory, sourceID: UUID, targetID: UUID) {
+        var values = subcategories.options(for: category)
+        guard let source = values.firstIndex(where: { $0.id == sourceID }),
+              let target = values.firstIndex(where: { $0.id == targetID }),
+              source != target else { return }
+        withAnimation(.snappy) {
+            values.move(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+            for (index, item) in values.enumerated() { item.sortOrder = index }
+        }
+        try? context.save()
+    }
+}
+
+private struct SubcategoryEditorView: View {
+    let subcategory: WardrobeSubcategory?
+    @Query private var allSubcategories: [WardrobeSubcategory]
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var category: GarmentCategory
+
+    init(subcategory: WardrobeSubcategory? = nil) {
+        self.subcategory = subcategory
+        _name = State(initialValue: subcategory?.name ?? "")
+        _category = State(initialValue: subcategory?.category ?? .tops)
+    }
+
+    private var cleanName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isDuplicate: Bool {
+        allSubcategories.contains {
+            $0.id != subcategory?.id && $0.categoryRaw == category.rawValue &&
+            $0.name.compare(cleanName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $name)
+                Picker("Category", selection: $category) {
+                    ForEach(GarmentCategory.allCases) { Text($0.title).tag($0) }
+                }
+                .disabled(subcategory != nil)
+            } footer: {
+                if subcategory != nil { Text("The category stays fixed so existing clothing assignments remain valid.") }
+                if isDuplicate { Text("That subcategory already exists in this category.").foregroundStyle(.red) }
+            }
+        }
+        .navigationTitle(subcategory == nil ? "New subcategory" : "Edit subcategory")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { save() }.disabled(cleanName.isEmpty || isDuplicate)
+            }
+        }
+    }
+
+    private func save() {
+        if let subcategory {
+            subcategory.name = cleanName
+        } else {
+            let order = (allSubcategories.options(for: category).map(\.sortOrder).max() ?? -1) + 1
+            context.insert(WardrobeSubcategory(name: cleanName, category: category, sortOrder: order))
+        }
+        try? context.save()
+        dismiss()
     }
 }

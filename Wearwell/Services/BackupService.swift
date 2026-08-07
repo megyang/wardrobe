@@ -18,6 +18,7 @@ struct WearwellBackupManifest: Codable {
     var shoppingProfiles: [ShoppingProfileRecord]? = nil
     var purchaseNeeds: [PurchaseNeedRecord]? = nil
     var packingTrips: [PackingTripRecord]? = nil
+    var subcategories: [SubcategoryRecord]? = nil
     var assets: [AssetRecord]
 
     struct GarmentRecord: Codable {
@@ -26,6 +27,7 @@ struct WearwellBackupManifest: Codable {
         var confidence: Double; var fingerprint: String; var sourceAssetName: String; var catalogAssetName: String
         var sourceURL: String?; var tags: String; var season: String; var occasion: String
         var isFavorite: Bool; var createdAt: Date; var modelVersion: String; var promptVersion: String
+        var manualOrder: Int? = nil
     }
 
     struct WishlistRecord: Codable {
@@ -38,6 +40,7 @@ struct WearwellBackupManifest: Codable {
     struct OutfitRecord: Codable {
         var id: UUID; var title: String; var notes: String; var rationale: String; var originRaw: String
         var layoutJSON: Data; var boardAssetName: String?; var wishlistItemID: UUID?; var createdAt: Date; var updatedAt: Date
+        var manualOrder: Int? = nil
     }
 
     struct VisualizationRecord: Codable {
@@ -71,6 +74,11 @@ struct WearwellBackupManifest: Codable {
         var id: UUID; var title: String; var startDate: Date; var endDate: Date
         var assignmentsJSON: Data; var packedGarmentIDsJSON: Data
         var createdAt: Date; var updatedAt: Date
+    }
+
+    struct SubcategoryRecord: Codable {
+        var id: UUID; var value: String; var name: String; var categoryRaw: String
+        var sortOrder: Int; var createdAt: Date
     }
 
     struct AssetRecord: Codable {
@@ -193,6 +201,7 @@ enum BackupService {
         let shoppingProfiles = try context.fetch(FetchDescriptor<ShoppingProfile>())
         let purchaseNeeds = try context.fetch(FetchDescriptor<PurchaseNeed>())
         let packingTrips = try context.fetch(FetchDescriptor<PackingTrip>())
+        let subcategories = try context.fetch(FetchDescriptor<WardrobeSubcategory>())
         let blobs = try context.fetch(FetchDescriptor<AssetBlob>())
 
         var assetRecords: [String: WearwellBackupManifest.AssetRecord] = [:]
@@ -216,9 +225,9 @@ enum BackupService {
         let manifest = WearwellBackupManifest(
             version: WearwellBackupManifest.currentVersion,
             createdAt: .now,
-            garments: garments.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, observed: $0.observed, unknownsJSON: $0.unknownsJSON, confidence: $0.confidence, fingerprint: $0.fingerprint, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, sourceURL: $0.sourceURL, tags: $0.tags, season: $0.season, occasion: $0.occasion, isFavorite: $0.isFavorite, createdAt: $0.createdAt, modelVersion: $0.modelVersion, promptVersion: $0.promptVersion) },
+            garments: garments.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, observed: $0.observed, unknownsJSON: $0.unknownsJSON, confidence: $0.confidence, fingerprint: $0.fingerprint, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, sourceURL: $0.sourceURL, tags: $0.tags, season: $0.season, occasion: $0.occasion, isFavorite: $0.isFavorite, createdAt: $0.createdAt, modelVersion: $0.modelVersion, promptVersion: $0.promptVersion, manualOrder: $0.manualOrder) },
             wishlistItems: wishlist.map { .init(id: $0.id, label: $0.label, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, color: $0.color, details: $0.details, sourceAssetName: $0.sourceAssetName, catalogAssetName: $0.catalogAssetName, sourceURL: $0.sourceURL, fingerprint: $0.fingerprint, verdictRaw: $0.verdictRaw, verdictSummary: $0.verdictSummary, createdAt: $0.createdAt, purchasedAt: $0.purchasedAt) },
-            outfits: outfits.map { .init(id: $0.id, title: $0.title, notes: $0.notes, rationale: $0.rationale, originRaw: $0.originRaw, layoutJSON: $0.layoutJSON, boardAssetName: $0.boardAssetName, wishlistItemID: $0.wishlistItemID, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
+            outfits: outfits.map { .init(id: $0.id, title: $0.title, notes: $0.notes, rationale: $0.rationale, originRaw: $0.originRaw, layoutJSON: $0.layoutJSON, boardAssetName: $0.boardAssetName, wishlistItemID: $0.wishlistItemID, createdAt: $0.createdAt, updatedAt: $0.updatedAt, manualOrder: $0.manualOrder) },
             visualizations: visualizations.map { .init(id: $0.id, outfitID: $0.outfitID, modeRaw: $0.modeRaw, assetName: $0.assetName, createdAt: $0.createdAt, modelVersion: $0.modelVersion) },
             referencePhotos: references.map { .init(id: $0.id, label: $0.label, assetName: $0.assetName, isDefault: $0.isDefault, createdAt: $0.createdAt) },
             inspirationLooks: inspiration.map { .init(id: $0.id, assetName: $0.assetName, sourceURL: $0.sourceURL, state: $0.state, analysisJSON: $0.analysisJSON, errorMessage: $0.errorMessage, isFavorite: $0.isFavorite, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
@@ -226,6 +235,7 @@ enum BackupService {
             shoppingProfiles: shoppingProfiles.map { .init(id: $0.id, profileJSON: $0.profileJSON, updatedAt: $0.updatedAt) },
             purchaseNeeds: purchaseNeeds.map { .init(id: $0.id, title: $0.title, categoryRaw: $0.categoryRaw, subcategoryRaw: $0.subcategoryRaw, rationale: $0.rationale, searchQuery: $0.searchQuery, isLunaSuggested: $0.isLunaSuggested, isCompleted: $0.isCompleted, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
             packingTrips: packingTrips.map { .init(id: $0.id, title: $0.title, startDate: $0.startDate, endDate: $0.endDate, assignmentsJSON: $0.assignmentsJSON, packedGarmentIDsJSON: $0.packedGarmentIDsJSON, createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
+            subcategories: subcategories.map { .init(id: $0.id, value: $0.value, name: $0.name, categoryRaw: $0.categoryRaw, sortOrder: $0.sortOrder, createdAt: $0.createdAt) },
             assets: assetRecords.values.sorted { $0.name < $1.name }
         )
         let encoder = JSONEncoder.wearwell
@@ -267,6 +277,7 @@ enum BackupService {
             item.fingerprint = record.fingerprint; item.sourceAssetName = record.sourceAssetName; item.catalogAssetName = record.catalogAssetName
             item.sourceURL = record.sourceURL; item.tags = record.tags; item.season = record.season; item.occasion = record.occasion
             item.isFavorite = record.isFavorite; item.createdAt = record.createdAt; item.modelVersion = record.modelVersion; item.promptVersion = record.promptVersion
+            item.manualOrder = record.manualOrder
             applied += 1
         }
         for record in manifest.wishlistItems {
@@ -284,6 +295,7 @@ enum BackupService {
             item.title = record.title; item.notes = record.notes; item.rationale = record.rationale; item.originRaw = record.originRaw
             item.layoutJSON = record.layoutJSON; item.boardAssetName = record.boardAssetName; item.wishlistItemID = record.wishlistItemID
             item.createdAt = record.createdAt; item.updatedAt = record.updatedAt; applied += 1
+            item.manualOrder = record.manualOrder
         }
         for record in manifest.visualizations {
             let item = try fetch(id: record.id, from: context) ?? Visualization(id: record.id, outfitID: record.outfitID, mode: VisualizationMode(rawValue: record.modeRaw) ?? .collage, assetName: record.assetName)
@@ -328,6 +340,16 @@ enum BackupService {
             item.assignmentsJSON = record.assignmentsJSON; item.packedGarmentIDsJSON = record.packedGarmentIDsJSON
             item.createdAt = record.createdAt; item.updatedAt = record.updatedAt; applied += 1
         }
+        for record in manifest.subcategories ?? [] {
+            let item = try fetch(id: record.id, from: context) ?? fetchSubcategory(record.value, context) ?? WardrobeSubcategory(
+                id: record.id, value: record.value, name: record.name,
+                category: GarmentCategory(rawValue: record.categoryRaw) ?? .tops,
+                sortOrder: record.sortOrder, createdAt: record.createdAt
+            )
+            if item.modelContext == nil { context.insert(item) }
+            item.value = record.value; item.name = record.name; item.categoryRaw = record.categoryRaw
+            item.sortOrder = record.sortOrder; item.createdAt = record.createdAt; applied += 1
+        }
 
         let existingBlobs = try context.fetch(FetchDescriptor<AssetBlob>())
         let grouped = Dictionary(grouping: existingBlobs, by: \.name)
@@ -368,6 +390,7 @@ enum BackupService {
         if T.self == ShoppingProfile.self { return try fetchShoppingProfile(id, context) as? T }
         if T.self == PurchaseNeed.self { return try fetchPurchaseNeed(id, context) as? T }
         if T.self == PackingTrip.self { return try fetchPackingTrip(id, context) as? T }
+        if T.self == WardrobeSubcategory.self { return try fetchSubcategory(id, context) as? T }
         return nil
     }
 
@@ -381,6 +404,8 @@ enum BackupService {
     private static func fetchShoppingProfile(_ id: UUID, _ context: ModelContext) throws -> ShoppingProfile? { var d = FetchDescriptor<ShoppingProfile>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchPurchaseNeed(_ id: UUID, _ context: ModelContext) throws -> PurchaseNeed? { var d = FetchDescriptor<PurchaseNeed>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
     private static func fetchPackingTrip(_ id: UUID, _ context: ModelContext) throws -> PackingTrip? { var d = FetchDescriptor<PackingTrip>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
+    private static func fetchSubcategory(_ id: UUID, _ context: ModelContext) throws -> WardrobeSubcategory? { var d = FetchDescriptor<WardrobeSubcategory>(predicate: #Predicate { $0.id == id }); d.fetchLimit = 1; return try context.fetch(d).first }
+    private static func fetchSubcategory(_ value: String, _ context: ModelContext) throws -> WardrobeSubcategory? { var d = FetchDescriptor<WardrobeSubcategory>(predicate: #Predicate { $0.value == value }); d.fetchLimit = 1; return try context.fetch(d).first }
 }
 
 private extension JSONEncoder {

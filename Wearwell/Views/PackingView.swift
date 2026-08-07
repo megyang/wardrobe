@@ -100,6 +100,7 @@ private struct CreatePackingTripView: View {
             }
             .onChange(of: startDate) { _, value in if endDate < value { endDate = value } }
         }
+        .keyboardDismissToolbar()
     }
 }
 
@@ -361,6 +362,7 @@ private struct EditPackingTripView: View {
             }
             .onChange(of: startDate) { _, value in if endDate < value { endDate = value } }
         }
+        .keyboardDismissToolbar()
     }
 
     private func save() {

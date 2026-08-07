@@ -239,6 +239,62 @@ actor AssetStore {
     }
 }
 
+enum ImportCutoutPreparationError: LocalizedError {
+    case missingCutout(String)
+    case invalidCutout(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingCutout(let label):
+            "Luna could not create a cutout for \(label). Tap Retry to try the import again."
+        case .invalidCutout(let label):
+            "The cutout for \(label) could not be prepared. Tap Retry to try the import again."
+        }
+    }
+}
+
+enum ImportCutoutPreparer {
+    static func prepare(_ analyses: [GarmentAnalysisDTO]) async throws -> [GarmentAnalysisDTO] {
+        guard !analyses.isEmpty else {
+            throw ImportCutoutPreparationError.invalidCutout("the detected clothing")
+        }
+        var prepared: [GarmentAnalysisDTO] = []
+        prepared.reserveCapacity(analyses.count)
+        for var analysis in analyses {
+            try Task.checkCancellation()
+            guard let encoded = analysis.catalogImageBase64,
+                  let data = Data(base64Encoded: encoded), !data.isEmpty else {
+                throw ImportCutoutPreparationError.missingCutout(analysis.label)
+            }
+            let label = analysis.label
+            let cutout = try await Task.detached(priority: .utility) {
+                guard let image = UIImage(data: data),
+                      let png = AssetStore.preparedCollageImage(from: image).pngData(),
+                      !png.isEmpty else {
+                    throw ImportCutoutPreparationError.invalidCutout(label)
+                }
+                return png.base64EncodedString()
+            }.value
+            analysis.catalogImageBase64 = cutout
+            prepared.append(analysis)
+        }
+        return prepared
+    }
+}
+
+actor ImportCutoutPreparationCoordinator {
+    static let shared = ImportCutoutPreparationCoordinator()
+    private var tasks: [UUID: Task<[GarmentAnalysisDTO], Error>] = [:]
+
+    func prepare(draftID: UUID, analyses: [GarmentAnalysisDTO]) async throws -> [GarmentAnalysisDTO] {
+        if let task = tasks[draftID] { return try await task.value }
+        let task = Task { try await ImportCutoutPreparer.prepare(analyses) }
+        tasks[draftID] = task
+        defer { tasks[draftID] = nil }
+        return try await task.value
+    }
+}
+
 enum EmbeddedCheckerboardRefiner {
     private struct ColorBin {
         var count = 0

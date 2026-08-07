@@ -9,7 +9,7 @@ private struct ReviewCandidate: Identifiable {
     var analysis: GarmentAnalysisDTO
     var label: String
     var category: GarmentCategory
-    var subcategory: GarmentSubcategory?
+    var subcategoryRaw: String?
     var color: String
     var details: String
     var accepted = true
@@ -42,6 +42,7 @@ struct AddClothesView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Query private var garments: [Garment]
     @Query(sort: \ImportDraft.createdAt) private var drafts: [ImportDraft]
+    @Query private var subcategories: [WardrobeSubcategory]
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var photoImportMode: PhotoImportMode = .separateItems
     @State private var stagedImportMode: PhotoImportMode = .separateItems
@@ -56,7 +57,12 @@ struct AddClothesView: View {
     @State private var saveTotal = 0
     @State private var error: String?
 
-    private var working: Bool { drafts.contains { ["pending", "submitting", "queued", "processing"].contains($0.state) } }
+    private var working: Bool { drafts.contains { ["pending", "submitting", "queued", "processing", "preparing"].contains($0.state) } }
+    private var workingMessage: String {
+        drafts.contains(where: { $0.state == "preparing" })
+            ? "Luna is finishing the final cutouts…"
+            : "Luna is identifying visible clothes…"
+    }
     private let reviewSectionID = "ready-import-reviews"
 
     var body: some View {
@@ -71,7 +77,7 @@ struct AddClothesView: View {
                         urlImportCard
                         if working {
                             VStack(spacing: 8) {
-                                ProgressView("Luna is identifying visible clothes…")
+                                ProgressView(workingMessage)
                                 Text("Once an import says Queued, you can lock your phone. The Mac will keep working.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             }.padding()
                         }
@@ -199,10 +205,10 @@ struct AddClothesView: View {
                         WearwellTheme.previewSurface
                         if review.wrappedValue.showsSource, let image = UIImage(data: review.wrappedValue.sourceData) {
                             Image(uiImage: image).resizable().scaledToFit().padding(8)
-                        } else if let data = review.wrappedValue.catalogData {
-                            CatalogDataImage(data: data).padding(18)
-                        } else if let image = UIImage(data: review.wrappedValue.sourceData) {
-                            Image(uiImage: image).resizable().scaledToFit().padding(8)
+                        } else if let data = review.wrappedValue.catalogData, let image = UIImage(data: data) {
+                            Image(uiImage: image).resizable().scaledToFit().padding(18)
+                        } else {
+                            ProgressView("Finishing cutout…")
                         }
                     }
                     .aspectRatio(4 / 5, contentMode: .fit)
@@ -220,13 +226,15 @@ struct AddClothesView: View {
                         TextField("Name", text: review.label)
                         Picker("Category", selection: review.category) { ForEach(GarmentCategory.allCases) { Text($0.title).tag($0) } }
                             .onChange(of: review.wrappedValue.category) { _, category in
-                                if review.wrappedValue.subcategory?.category != category { review.wrappedValue.subcategory = nil }
+                                if !subcategories.options(for: category).contains(where: { $0.value == review.wrappedValue.subcategoryRaw }) {
+                                    review.wrappedValue.subcategoryRaw = nil
+                                }
                             }
-                        if !GarmentSubcategory.options(for: review.wrappedValue.category).isEmpty {
-                            Picker("Type", selection: review.subcategory) {
-                                Text("Unspecified").tag(nil as GarmentSubcategory?)
-                                ForEach(GarmentSubcategory.options(for: review.wrappedValue.category)) { item in
-                                    Text(item.title).tag(Optional(item))
+                        if !subcategories.options(for: review.wrappedValue.category).isEmpty {
+                            Picker("Type", selection: review.subcategoryRaw) {
+                                Text("Unspecified").tag(nil as String?)
+                                ForEach(subcategories.options(for: review.wrappedValue.category)) { item in
+                                    Text(item.name).tag(Optional(item.value))
                                 }
                             }
                         }
@@ -351,11 +359,15 @@ struct AddClothesView: View {
             do {
                 let source = try await AssetStore.shared.save(review.sourceData, preferredExtension: "jpg")
                 savedSource = source
-                let rawCatalog = review.catalogData ?? review.sourceData
+                guard let rawCatalog = review.catalogData else {
+                    throw ImportCutoutPreparationError.missingCutout(review.label)
+                }
                 let cleanedCatalog = review.catalogDataIsPrepared ? rawCatalog : (await preparedCatalogData(rawCatalog) ?? rawCatalog)
                 let catalog = try await AssetStore.shared.save(cleanedCatalog, preferredExtension: "png", preparedCollage: true)
                 savedCatalog = catalog
-                newGarments.append(Garment(label: review.label, category: review.category, subcategory: review.subcategory, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion))
+                let garment = Garment(label: review.label, category: review.category, color: review.color, details: review.details, observed: review.analysis.observed, unknowns: review.analysis.unknowns, confidence: review.analysis.confidence, fingerprint: fingerprint, sourceAssetName: source, catalogAssetName: catalog, sourceURL: review.sourceURL, modelVersion: review.analysis.modelVersion)
+                garment.subcategoryRaw = review.subcategoryRaw
+                newGarments.append(garment)
                 newAssetNames.append(contentsOf: [source, catalog])
                 if !fingerprint.isEmpty { knownFingerprints.insert(fingerprint) }
             } catch {
@@ -401,7 +413,6 @@ struct AddClothesView: View {
     }
 
     private func refreshDrafts() async {
-        var completedJobIDs: [String] = []
         for draft in drafts {
             if isOverdue(draft) {
                 if let id = draft.remoteJobID { await companion.deleteAnalysisJob(id: id) }
@@ -410,13 +421,25 @@ struct AddClothesView: View {
                 continue
             }
             if draft.state == "pending", companion.status == .available { await submit(draft); continue }
+            if draft.state == "preparing" {
+                await finishCutouts(for: draft)
+                continue
+            }
             guard ["queued", "processing"].contains(draft.state), let id = draft.remoteJobID else { continue }
             do {
                 let job = try await companion.analysisJob(id: id)
                 apply(job, to: draft)
-                if let items = job.result?.items {
-                    draft.analyses = items; draft.state = "ready"; try context.save()
-                    completedJobIDs.append(id)
+                if job.state == "complete", let items = job.result?.items {
+                    draft.analyses = items
+                    draft.state = "preparing"
+                    draft.progressStage = "Finishing cutouts"
+                    draft.estimatedSecondsRemaining = nil
+                    draft.isUnread = false
+                    try context.save()
+                    await finishCutouts(for: draft)
+                } else if job.state == "complete" {
+                    markUnavailable(draft, message: "The completed import did not include clothing results. Tap Retry to try again.")
+                    try? context.save()
                 } else { try context.save() }
             } catch ClientError.jobNotFound {
                 markUnavailable(draft, message: "Job not found or expired. Tap Retry to submit it again.")
@@ -426,45 +449,68 @@ struct AddClothesView: View {
             }
         }
         await hydrateReadyDrafts()
-        for id in completedJobIDs { await companion.deleteAnalysisJob(id: id) }
     }
 
     private func hydrateReadyDrafts() async {
-        var pendingPreviews: [(candidateID: UUID, data: Data)] = []
         for draft in drafts where draft.state == "ready" {
-            pendingPreviews.append(contentsOf: await hydrateReadyDraft(draft))
+            await hydrateReadyDraft(draft)
         }
-        await prepareCatalogPreviews(pendingPreviews)
     }
 
-    private func hydrateReadyDraft(_ draft: ImportDraft) async -> [(candidateID: UUID, data: Data)] {
+    private func hydrateReadyDraft(_ draft: ImportDraft) async {
         let missingItems = draft.analyses.filter { item in
             !reviews.contains(where: { $0.draftID == draft.id && $0.analysis.id == item.id })
         }
-        guard !missingItems.isEmpty else { return [] }
-        guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName) else { return [] }
-        var pendingPreviews: [(candidateID: UUID, data: Data)] = []
+        guard !missingItems.isEmpty else { return }
+        guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName) else { return }
+        var candidates: [ReviewCandidate] = []
         for item in missingItems {
-            let category = GarmentCategory(rawValue: item.category) ?? .tops
-            let subcategory = item.subcategory.flatMap(GarmentSubcategory.init(rawValue:))
-            let candidate = ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategory: subcategory?.category == category ? subcategory : nil, color: item.color, details: item.description, catalogData: nil, sourceData: sourceData, sourceURL: draft.sourceURL)
-            reviews.append(candidate)
-            if let data = item.catalogImageBase64.flatMap({ Data(base64Encoded: $0) }) {
-                pendingPreviews.append((candidate.id, data))
+            guard let catalogData = item.catalogImageBase64.flatMap({ Data(base64Encoded: $0) }) else {
+                markUnavailable(draft, message: "A prepared cutout was unavailable. Tap Retry to try the import again.")
+                try? context.save()
+                return
             }
+            let category = GarmentCategory(rawValue: item.category) ?? .tops
+            let subcategoryRaw = subcategories.options(for: category).contains(where: { $0.value == item.subcategory }) ? item.subcategory : nil
+            candidates.append(ReviewCandidate(draftID: draft.id, analysis: item, label: item.label, category: category, subcategoryRaw: subcategoryRaw, color: item.color, details: item.description, catalogData: catalogData, catalogDataIsPrepared: true, sourceData: sourceData, sourceURL: draft.sourceURL))
         }
-        return pendingPreviews
+        reviews.append(contentsOf: candidates)
     }
 
-    private func prepareCatalogPreviews(_ pendingPreviews: [(candidateID: UUID, data: Data)]) async {
-        // Cards become usable immediately with their source image. Prepare generated
-        // previews one at a time so a large import cannot saturate Vision and stall UI.
-        for preview in pendingPreviews {
-            guard !Task.isCancelled else { break }
-            let prepared = await preparedCatalogData(preview.data)
-            guard !Task.isCancelled, let index = reviews.firstIndex(where: { $0.id == preview.candidateID }) else { continue }
-            reviews[index].catalogData = prepared
-            reviews[index].catalogDataIsPrepared = prepared != nil
+    private func finishCutouts(for draft: ImportDraft) async {
+        guard draft.state == "preparing" else { return }
+        let jobID = draft.remoteJobID
+        do {
+            let prepared = try await ImportCutoutPreparationCoordinator.shared.prepare(
+                draftID: draft.id,
+                analyses: draft.analyses
+            )
+            guard !Task.isCancelled, draft.state == "preparing" else { return }
+            guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName),
+                  !sourceData.isEmpty else {
+                throw ImportCutoutPreparationError.invalidCutout("the source photo")
+            }
+            draft.analyses = prepared
+            try context.save()
+
+            draft.state = "ready"
+            draft.progressStage = "Ready to review"
+            draft.progressCompleted = prepared.count
+            draft.progressTotal = prepared.count
+            draft.queuePosition = nil
+            draft.estimatedSecondsRemaining = nil
+            draft.errorMessage = nil
+            draft.remoteJobID = nil
+            draft.isUnread = true
+            draft.updatedAt = .now
+            try context.save()
+            if let jobID { await companion.deleteAnalysisJob(id: jobID) }
+        } catch is CancellationError {
+            return
+        } catch {
+            if let jobID { await companion.deleteAnalysisJob(id: jobID) }
+            markUnavailable(draft, message: error.localizedDescription)
+            try? context.save()
         }
     }
 
@@ -485,6 +531,7 @@ struct AddClothesView: View {
         case "submitting": "Submitting import"
         case "queued": "Queued — safe to lock"
         case "processing": "Processing on your Mac"
+        case "preparing": "Finishing cutouts"
         case "ready": "Ready to review"
         case "failed": "Import failed"
         default: "Waiting to submit"
@@ -528,17 +575,20 @@ struct AddClothesView: View {
     }
 
     private func isOverdue(_ draft: ImportDraft, at now: Date = .now) -> Bool {
-        ["submitting", "queued", "processing"].contains(draft.state) &&
+        ["submitting", "queued", "processing", "preparing"].contains(draft.state) &&
         now.timeIntervalSince(draft.createdAt) >= Self.importTimeout
     }
 
     private func markUnavailable(_ draft: ImportDraft, message: String) {
         draft.state = "failed"
         draft.remoteJobID = nil
-        draft.progressStage = "Import unavailable"
+        draft.progressStage = "Cutout unavailable"
+        draft.progressCompleted = nil
+        draft.progressTotal = nil
         draft.queuePosition = nil
         draft.estimatedSecondsRemaining = nil
         draft.errorMessage = message
+        draft.isUnread = false
         draft.updatedAt = .now
     }
 

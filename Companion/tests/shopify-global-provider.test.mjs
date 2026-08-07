@@ -38,7 +38,7 @@ test("merchant identity collapses regional subdomains without breaking compound 
 test("global query lanes use derived style descriptors without summaries or personal identifiers", () => {
   const queries = buildGlobalCatalogQueries({
     query: "a cardigan under $100",
-    preferences: { clothingAudience: "women" },
+    preferences: { clothingAudience: "women", priceTier: "mid", preferredMaterials: ["cotton"], qualityPriority: 0.8, uniquenessPreference: 0.8 },
     styleProfile: {
       summary: "PRIVATE PROFILE SUMMARY", aesthetics: ["romantic", "vintage"], palette: ["plum"],
       silhouettes: ["cropped"], layering: ["light layers"], details: ["texture"], vector: { romantic: 0.9, vintage: 0.7 }
@@ -48,6 +48,7 @@ test("global query lanes use derived style descriptors without summaries or pers
   assert.equal(queries.length, 4);
   const body = queries.join(" ");
   assert.match(body, /romantic|vintage/i);
+  assert.match(body, /cotton|mid-priced|distinctive/i);
   assert.doesNotMatch(body, /PRIVATE PROFILE SUMMARY|PRIVATE LOOK SUMMARY|PRIVATE-INSPIRATION-ID/);
 });
 

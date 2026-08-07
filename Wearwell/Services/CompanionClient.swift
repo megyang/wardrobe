@@ -267,11 +267,11 @@ final class CompanionClient: ObservableObject {
 
     func recommendItems(
         garments: [Garment], selectedGarmentIDs: [UUID], category: GarmentCategory? = nil,
-        subcategory: GarmentSubcategory? = nil, styleProfile: StyleProfile?, inspirations: [InspirationLook]
+        subcategory: String? = nil, styleProfile: StyleProfile?, inspirations: [InspirationLook]
     ) async throws -> ItemRecommendationDTO {
         status = .busy; defer { status = .available }
         let selected = Set(selectedGarmentIDs)
-        let matches: (Garment) -> Bool = { (category == nil || $0.category == category) && (subcategory == nil || $0.subcategory == subcategory) }
+        let matches: (Garment) -> Bool = { (category == nil || $0.category == category) && (subcategory == nil || $0.subcategoryRaw == subcategory) }
         let relevant = garments.filter { selected.contains($0.id) || matches($0) }
         let visuals = await visualReferences(relevant.map {
             VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
@@ -281,7 +281,7 @@ final class CompanionClient: ObservableObject {
         let exampleIDs = Set(examples.map(\.id))
         let payload = ItemRecommendationRequest(
             wardrobe: garments.map(GarmentSummary.init), selectedGarmentIDs: selectedGarmentIDs,
-            category: category?.rawValue ?? "", subcategory: subcategory?.rawValue,
+            category: category?.rawValue ?? "", subcategory: subcategory,
             styleProfile: styleProfile?.profile, inspirationExamples: examples,
             garmentVisuals: visuals,
             inspirationVisuals: await visualReferences(inspirations.filter { exampleIDs.contains($0.id) }.map {
@@ -395,7 +395,9 @@ final class CompanionClient: ObservableObject {
         shoppingProfile: ShoppingProfileDTO,
         focusGarmentIDs: [UUID] = [],
         focusInspirationIDs: [UUID] = [],
-        resultLimit: Int = 60
+        resultLimit: Int = 60,
+        searchMode: String = "personalized",
+        feedback: ShoppingFeedbackDTO = ShoppingFeedbackDTO()
     ) async throws -> ShopDiscoveryJobDTO {
         status = .busy
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Queue shop discovery")
@@ -411,16 +413,18 @@ final class CompanionClient: ObservableObject {
             query: query,
             retailerDomains: shoppingProfile.retailerDomains,
             preferences: shoppingProfile,
-            styleProfile: styleProfile?.profile,
-            wardrobe: garments.map(GarmentSummary.init),
-            inspirationExamples: readyInspirations.prefix(40).compactMap(InspirationExample.init),
+            searchMode: searchMode,
+            feedback: searchMode == "catalog" ? ShoppingFeedbackDTO() : feedback,
+            styleProfile: searchMode == "catalog" ? nil : styleProfile?.profile,
+            wardrobe: searchMode == "catalog" ? [] : garments.map(GarmentSummary.init),
+            inspirationExamples: searchMode == "catalog" ? [] : readyInspirations.prefix(40).compactMap(InspirationExample.init),
             focusGarmentIDs: focusGarmentIDs,
             focusInspirationIDs: focusInspirationIDs,
             resultLimit: resultLimit,
-            garmentVisuals: await visualReferences(garments.map {
+            garmentVisuals: searchMode == "catalog" ? [] : await visualReferences(garments.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName)
             }, byteBudget: 10 * 1024 * 1024),
-            inspirationVisuals: await visualReferences(readyInspirations.map {
+            inspirationVisuals: searchMode == "catalog" ? [] : await visualReferences(readyInspirations.map {
                 VisualSource(id: $0.id.uuidString, assetName: $0.assetName)
             }, byteBudget: 3 * 1024 * 1024)
         )
@@ -744,6 +748,8 @@ private struct ShopDiscoveryRequest: Codable {
     let query: String
     let retailerDomains: [String]
     let preferences: ShoppingProfileDTO
+    let searchMode: String
+    let feedback: ShoppingFeedbackDTO
     let styleProfile: StyleProfileDTO?
     let wardrobe: [GarmentSummary]
     let inspirationExamples: [InspirationExample]

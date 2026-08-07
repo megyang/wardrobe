@@ -111,6 +111,7 @@ final class WearwellTests: XCTestCase {
     func testActivityStateNormalization() {
         XCTAssertEqual(ActivityEntryBuilder.normalized("processing"), .active)
         XCTAssertEqual(ActivityEntryBuilder.normalized("analyzing"), .active)
+        XCTAssertEqual(ActivityEntryBuilder.normalized("preparing"), .active)
         XCTAssertEqual(ActivityEntryBuilder.normalized("failed"), .failed)
         XCTAssertEqual(ActivityEntryBuilder.normalized("ready"), .complete)
     }
@@ -167,6 +168,85 @@ final class WearwellTests: XCTestCase {
             XCTAssertFalse(garment.isUnreadImageRegeneration)
             XCTAssertFalse(inspiration.isUnreadAnalysis)
         }
+    }
+
+    @MainActor
+    func testExistingV6StoreMigratesToV7AndKeepsPersonalSubcategories() throws {
+        let storeURL = FileManager.default.temporaryDirectory.appending(path: "WearwellSubcategoryMigration-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV6.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            container.mainContext.insert(Garment(label: "Existing shirt", category: .tops, subcategory: .tankTop, color: "Blue"))
+            try container.mainContext.save()
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV7.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: "WearwellTests-\(UUID().uuidString)"))
+            try PersonalSubcategoryMigration.runIfNeeded(in: container, existingStore: true, defaults: defaults)
+
+            let garment = try XCTUnwrap(container.mainContext.fetch(FetchDescriptor<Garment>()).first)
+            let subcategories = try container.mainContext.fetch(FetchDescriptor<WardrobeSubcategory>())
+            XCTAssertEqual(garment.subcategoryRaw, GarmentSubcategory.tankTop.rawValue)
+            XCTAssertEqual(subcategories.count, WardrobeSubcategory.legacyUserValues.count)
+            XCTAssertEqual(subcategories.first(where: { $0.value == garment.subcategoryRaw })?.name, "Tank top")
+        }
+    }
+
+    @MainActor
+    func testNewV7StoreDoesNotReceiveDefaultSubcategories() throws {
+        let container = try makeInMemoryContainer()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "WearwellTests-\(UUID().uuidString)"))
+
+        try PersonalSubcategoryMigration.runIfNeeded(in: container, existingStore: false, defaults: defaults)
+
+        XCTAssertTrue(try container.mainContext.fetch(FetchDescriptor<WardrobeSubcategory>()).isEmpty)
+    }
+
+    @MainActor
+    func testV7StoreMigratesToV8AndPersistsManualOrdering() throws {
+        let storeURL = FileManager.default.temporaryDirectory.appending(path: "WearwellOrderingMigration-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV7.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            container.mainContext.insert(Garment(label: "Shirt", category: .tops, color: "Blue"))
+            container.mainContext.insert(Outfit(title: "Look", origin: .manual, layout: []))
+            try container.mainContext.save()
+        }
+        do {
+            let schema = Schema(versionedSchema: WearwellSchemaV8.self)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let garment = try XCTUnwrap(container.mainContext.fetch(FetchDescriptor<Garment>()).first)
+            let outfit = try XCTUnwrap(container.mainContext.fetch(FetchDescriptor<Outfit>()).first)
+            XCTAssertNil(garment.manualOrder)
+            XCTAssertNil(outfit.manualOrder)
+            garment.manualOrder = 2
+            outfit.manualOrder = 1
+            try container.mainContext.save()
+            XCTAssertEqual(garment.manualOrder, 2)
+            XCTAssertEqual(outfit.manualOrder, 1)
+        }
+    }
+
+    func testSavedCategoryOrderKeepsEveryCategory() {
+        XCTAssertEqual(
+            GarmentCategory.ordered(using: "shoes,tops").map(\.rawValue),
+            ["shoes", "tops", "bottoms", "outerwear", "dresses", "accessories"]
+        )
     }
 
     @MainActor
@@ -442,6 +522,18 @@ final class WearwellTests: XCTestCase {
         XCTAssertEqual(draft.state, "ready")
     }
 
+    func testImportCutoutPreparationRejectsMissingCutout() async {
+        let item = GarmentAnalysisDTO(label: "Blue shirt", category: "tops", color: "Blue", confidence: 0.91, description: "Cotton shirt", observed: "Blue button front", unknowns: [], fingerprint: "blue-shirt", catalogImageBase64: nil, modelVersion: "gpt-5.6-luna")
+        do {
+            _ = try await ImportCutoutPreparer.prepare([item])
+            XCTFail("Missing cutouts must not be treated as ready.")
+        } catch let error as ImportCutoutPreparationError {
+            XCTAssertEqual(error.localizedDescription, "Luna could not create a cutout for Blue shirt. Tap Retry to try the import again.")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testSubcategoriesStayWithinTheirParentCategory() {
         let garment = Garment(label: "Tank", category: .tops, subcategory: .tankTop, color: "White")
         XCTAssertEqual(garment.subcategory, .tankTop)
@@ -461,6 +553,8 @@ final class WearwellTests: XCTestCase {
         XCTAssertTrue(GarmentSubcategory.options(for: .bottoms).contains(.pants))
         XCTAssertTrue(GarmentSubcategory.options(for: .outerwear).contains(.coat))
         XCTAssertTrue(GarmentSubcategory.options(for: .accessories).contains(.hat))
+        XCTAssertTrue(GarmentSubcategory.options(for: .accessories).contains(.purse))
+        XCTAssertTrue(GarmentSubcategory.options(for: .accessories).contains(.jewelry))
         XCTAssertTrue(GarmentSubcategory.options(for: .dresses).isEmpty)
         XCTAssertTrue(GarmentSubcategory.options(for: .shoes).isEmpty)
     }
@@ -699,7 +793,7 @@ final class WearwellTests: XCTestCase {
 
     @MainActor
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: WearwellSchemaV6.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV8.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

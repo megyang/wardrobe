@@ -147,6 +147,8 @@ test("garment subcategories cannot cross parent categories", () => {
   assert.equal(normalizeSubcategory("tops", "pants"), null);
   assert.equal(normalizeSubcategory("dresses", "misc"), null);
   assert.equal(normalizeSubcategory("accessories", "misc"), "misc");
+  assert.equal(normalizeSubcategory("accessories", "purse"), "purse");
+  assert.equal(normalizeSubcategory("accessories", "jewelry"), "jewelry");
 });
 
 test("catalog prompt requests a removable solid chroma product background", () => {
@@ -160,6 +162,16 @@ test("catalog prompt requests a removable solid chroma product background", () =
 
   const greenPrompt = catalogPrompt({ label: "pale mint green shirt", observed: "mint fabric", unknowns: [] });
   assert.match(greenPrompt, /chroma magenta \(#FF00FF\)/i);
+
+  const pursePrompt = catalogPrompt({ label: "black shoulder bag", category: "accessories", subcategory: "purse", color: "Black", observed: "silver buckle", unknowns: [] });
+  assert.match(pursePrompt, /standalone product/i);
+  assert.match(pursePrompt, /handle, strap, closure/i);
+  assert.doesNotMatch(pursePrompt, /ghost mannequin/i);
+
+  const jewelryPrompt = catalogPrompt({ label: "gold pendant necklace", category: "accessories", subcategory: "jewelry", color: "Gold", observed: "round pendant", unknowns: [] });
+  assert.match(jewelryPrompt, /complete jewelry item/i);
+  assert.match(jewelryPrompt, /chain shape/i);
+  assert.doesNotMatch(jewelryPrompt, /ghost mannequin/i);
 });
 
 test("catalog image generation is serialized so photos cannot claim each other's artifact", async () => {

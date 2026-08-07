@@ -23,7 +23,10 @@ struct RootTabView: View {
         shopFeeds.filter { $0.isOutfitSpecific && $0.isUnread }.count + styleGenerations.filter(\.isUnread).count
     }
     private var unreadShopCount: Int { shopFeeds.filter { !$0.isOutfitSpecific && $0.isUnread }.count }
-    private var unreadWardrobeCount: Int { importDrafts.filter(\.isUnread).count + garments.filter(\.isUnreadImageRegeneration).count }
+    private var unreadWardrobeCount: Int {
+        importDrafts.filter { $0.state == "ready" && $0.isUnread }.count
+            + garments.filter(\.isUnreadImageRegeneration).count
+    }
     private var unreadInspirationCount: Int { inspirations.filter(\.isUnreadAnalysis).count }
     private var unreadSavedCount: Int { wishlistItems.filter(\.isUnreadAssessment).count }
     private var totalUnreadCount: Int { unreadStudioCount + unreadShopCount + unreadWardrobeCount + unreadInspirationCount + unreadSavedCount }
@@ -58,7 +61,7 @@ struct RootTabView: View {
                     item.assessmentState.map { ["queued", "processing"].contains($0) } ?? false
                 } || shopFeeds.contains { ["queued", "processing"].contains($0.state) }
                     || styleGenerations.contains { ["queued", "processing"].contains($0.state) }
-                    || importDrafts.contains { ["queued", "processing"].contains($0.state) }
+                    || importDrafts.contains { ["queued", "processing", "preparing"].contains($0.state) }
                 try? await Task.sleep(for: .seconds(hasActiveWork ? 3 : 30))
             }
         }
@@ -84,7 +87,7 @@ struct RootTabView: View {
 
     private func expireOverdueImports(at now: Date = .now) async {
         for draft in importDrafts where
-            ["submitting", "queued", "processing"].contains(draft.state) &&
+            ["submitting", "queued", "processing", "preparing"].contains(draft.state) &&
             now.timeIntervalSince(draft.createdAt) >= Self.importTimeout {
             if let id = draft.remoteJobID { await companion.deleteAnalysisJob(id: id) }
             draft.state = "failed"
@@ -93,6 +96,7 @@ struct RootTabView: View {
             draft.queuePosition = nil
             draft.estimatedSecondsRemaining = nil
             draft.errorMessage = "Import expired after waiting 24 hours. Open Add and tap Retry."
+            draft.isUnread = false
             draft.updatedAt = .now
         }
         try? context.save()
@@ -123,6 +127,9 @@ struct RootTabView: View {
     }
 
     private func refreshBackgroundGenerations() async {
+        for draft in importDrafts where draft.state == "preparing" {
+            await finishCutouts(for: draft)
+        }
         guard companion.isPaired, companion.status == .available else { return }
         var changed = false
         for snapshot in shopFeeds where ["queued", "processing"].contains(snapshot.state) {
@@ -169,14 +176,73 @@ struct RootTabView: View {
                 draft.progressCompleted = job.progressCompleted; draft.progressTotal = job.progressTotal
                 draft.queuePosition = job.queuePosition; draft.estimatedSecondsRemaining = job.estimatedSecondsRemaining
                 draft.errorMessage = job.error; draft.updatedAt = .now
-                if let items = job.result?.items {
-                    draft.analyses = items; draft.state = "ready"; draft.isUnread = true
-                    await companion.deleteAnalysisJob(id: id)
+                if job.state == "complete", let items = job.result?.items {
+                    draft.analyses = items
+                    draft.state = "preparing"
+                    draft.progressStage = "Finishing cutouts"
+                    draft.estimatedSecondsRemaining = nil
+                    draft.isUnread = false
+                    try context.save()
+                    await finishCutouts(for: draft)
+                } else if job.state == "complete" {
+                    await failImport(
+                        draft,
+                        message: "The completed import did not include clothing results. Open Add and tap Retry.",
+                        jobID: id
+                    )
                 }
                 changed = true
             } catch { /* Add will offer retry details if the job expires */ }
         }
         if changed { try? context.save() }
+    }
+
+    private func finishCutouts(for draft: ImportDraft) async {
+        guard draft.state == "preparing" else { return }
+        let jobID = draft.remoteJobID
+        do {
+            let prepared = try await ImportCutoutPreparationCoordinator.shared.prepare(
+                draftID: draft.id,
+                analyses: draft.analyses
+            )
+            guard !Task.isCancelled, draft.state == "preparing" else { return }
+            guard let sourceData = try? await AssetStore.shared.data(named: draft.sourceAssetName),
+                  !sourceData.isEmpty else {
+                throw ImportCutoutPreparationError.invalidCutout("the source photo")
+            }
+            draft.analyses = prepared
+            try context.save()
+
+            draft.state = "ready"
+            draft.progressStage = "Ready to review"
+            draft.progressCompleted = prepared.count
+            draft.progressTotal = prepared.count
+            draft.queuePosition = nil
+            draft.estimatedSecondsRemaining = nil
+            draft.errorMessage = nil
+            draft.remoteJobID = nil
+            draft.isUnread = true
+            draft.updatedAt = .now
+            try context.save()
+            if let jobID { await companion.deleteAnalysisJob(id: jobID) }
+        } catch is CancellationError {
+            return
+        } catch {
+            await failImport(draft, message: error.localizedDescription, jobID: jobID)
+        }
+    }
+
+    private func failImport(_ draft: ImportDraft, message: String, jobID: String?) async {
+        if let jobID { await companion.deleteAnalysisJob(id: jobID) }
+        draft.state = "failed"
+        draft.remoteJobID = nil
+        draft.progressStage = "Cutout unavailable"
+        draft.queuePosition = nil
+        draft.estimatedSecondsRemaining = nil
+        draft.errorMessage = message
+        draft.isUnread = false
+        draft.updatedAt = .now
+        try? context.save()
     }
 }
 

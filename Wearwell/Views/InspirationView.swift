@@ -68,10 +68,8 @@ struct InspirationView: View {
                                 Spacer()
                                 StatusPill(text: "v\(profile.revision) · \(profile.lookCount) looks")
                             }
-                            Text(profile.summary.isEmpty ? "Luna has saved your inspiration traits." : profile.summary)
-                                .font(.subheadline).foregroundStyle(WearwellTheme.muted)
-                            Text("This profile updates only when your inspiration library changes.")
-                                .font(.caption2).foregroundStyle(.secondary)
+                            Text(profile.summary.isEmpty ? "Your saved looks are shaping this profile." : profile.summary)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
                         .padding(16).background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
                     }
@@ -188,8 +186,6 @@ struct InspirationView: View {
                     .tint(WearwellTheme.coral)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(companion.status != .available)
-            } else if let analysis = look.analysis {
-                Text(analysis.summary).font(.caption).foregroundStyle(WearwellTheme.muted).lineLimit(4)
             }
             Button("Delete", role: .destructive) { Task { await delete(look) } }
                 .font(.caption2).frame(maxWidth: .infinity, alignment: .trailing)

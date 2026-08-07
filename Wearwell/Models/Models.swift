@@ -5,6 +5,11 @@ enum GarmentCategory: String, Codable, CaseIterable, Identifiable {
     case tops, bottoms, outerwear, dresses, shoes, accessories
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
+
+    static func ordered(using storedValue: String) -> [GarmentCategory] {
+        let saved = storedValue.split(separator: ",").compactMap { GarmentCategory(rawValue: String($0)) }
+        return saved + allCases.filter { !saved.contains($0) }
+    }
 }
 
 enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
@@ -25,6 +30,8 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
     case coat
     case tights
     case hat
+    case purse
+    case jewelry
     case misc
 
     var id: String { rawValue }
@@ -33,7 +40,7 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .longSleeve, .tankTop, .tShirt, .sleeveless, .blouse: .tops
         case .shorts, .skirt, .miniSkirt, .midiSkirt, .maxiSkirt, .pants: .bottoms
         case .coverup, .sweater, .jacket, .coat: .outerwear
-        case .tights, .hat, .misc: .accessories
+        case .tights, .hat, .purse, .jewelry, .misc: .accessories
         }
     }
     var title: String {
@@ -55,6 +62,8 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .coat: "Coat"
         case .tights: "Tights"
         case .hat: "Hat"
+        case .purse: "Purse"
+        case .jewelry: "Jewelry"
         case .misc: "Misc"
         }
     }
@@ -73,11 +82,69 @@ enum GarmentSubcategory: String, Codable, CaseIterable, Identifiable {
         case .jacket: "Jackets"
         case .coat: "Coats"
         case .hat: "Hats"
+        case .purse: "Purses"
         default: title
         }
     }
     static func options(for category: GarmentCategory) -> [GarmentSubcategory] {
         allCases.filter { $0.category == category && $0 != .skirt }
+    }
+}
+
+/// A subcategory owned by this local Wearwell user. The stable value is stored
+/// on garments so renaming a subcategory never breaks its assignments.
+@Model final class WardrobeSubcategory {
+    var id: UUID
+    var value: String
+    var name: String
+    var categoryRaw: String
+    var sortOrder: Int
+    var createdAt: Date
+
+    var category: GarmentCategory {
+        get { GarmentCategory(rawValue: categoryRaw) ?? .tops }
+        set { categoryRaw = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(), value: String? = nil, name: String,
+        category: GarmentCategory, sortOrder: Int = 0, createdAt: Date = .now
+    ) {
+        self.id = id
+        self.value = value ?? "custom_\(id.uuidString.lowercased())"
+        self.name = name
+        self.categoryRaw = category.rawValue
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+    }
+
+    static var legacyUserValues: [WardrobeSubcategory] {
+        GarmentCategory.allCases.flatMap { category in
+            GarmentSubcategory.options(for: category).enumerated().map { offset, legacy in
+                WardrobeSubcategory(
+                    value: legacy.rawValue,
+                    name: legacy.title,
+                    category: category,
+                    sortOrder: offset
+                )
+            }
+        }
+    }
+}
+
+extension Collection where Element == WardrobeSubcategory {
+    func options(for category: GarmentCategory) -> [WardrobeSubcategory] {
+        filter { $0.categoryRaw == category.rawValue }
+            .sorted {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    func title(for value: String?, fallback category: GarmentCategory) -> String {
+        guard let value else { return category.title }
+        if let saved = first(where: { $0.value == value }) { return saved.name }
+        return GarmentSubcategory(rawValue: value)?.title ?? value.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 
@@ -183,6 +250,7 @@ enum OutfitLayout {
     var createdAt: Date
     var modelVersion: String
     var promptVersion: String
+    var manualOrder: Int?
     var imageRegenerationJobID: String?
     var imageRegenerationState: String?
     var imageRegenerationStage: String?
@@ -216,6 +284,7 @@ enum OutfitLayout {
         self.sourceURL = sourceURL; self.tags = tags; self.season = season; self.occasion = occasion
         self.isFavorite = isFavorite; self.createdAt = createdAt
         self.modelVersion = modelVersion; self.promptVersion = promptVersion
+        self.manualOrder = nil
     }
 }
 
@@ -304,6 +373,7 @@ enum OutfitLayout {
     var wishlistItemID: UUID?
     var createdAt: Date
     var updatedAt: Date
+    var manualOrder: Int?
 
     var origin: OutfitOrigin {
         get { OutfitOrigin(rawValue: originRaw) ?? .manual }
@@ -334,6 +404,7 @@ enum OutfitLayout {
         self.id = id; self.title = title; self.notes = notes; self.rationale = rationale
         self.originRaw = origin.rawValue; self.layoutJSON = (try? JSONEncoder().encode(layout)) ?? Data()
         self.wishlistItemID = wishlistItemID; self.createdAt = .now; self.updatedAt = .now
+        self.manualOrder = nil
     }
 }
 
@@ -606,7 +677,7 @@ struct StyleProfileDTO: Codable, Equatable {
     }
 }
 
-struct GarmentAnalysisDTO: Codable, Identifiable {
+struct GarmentAnalysisDTO: Codable, Identifiable, Sendable {
     var id: UUID = UUID()
     let label: String
     let category: String
@@ -617,7 +688,7 @@ struct GarmentAnalysisDTO: Codable, Identifiable {
     let observed: String
     let unknowns: [String]
     let fingerprint: String
-    let catalogImageBase64: String?
+    var catalogImageBase64: String?
     let modelVersion: String
 }
 

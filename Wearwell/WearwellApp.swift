@@ -52,18 +52,33 @@ enum WearwellSchemaV6: VersionedSchema {
     static let models: [any PersistentModel.Type] = WearwellSchemaV5.models
 }
 
+enum WearwellSchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
+    static let models: [any PersistentModel.Type] = WearwellSchemaV6.models + [WardrobeSubcategory.self]
+}
+
+enum WearwellSchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+    static let models: [any PersistentModel.Type] = WearwellSchemaV7.models
+}
+
 @main
 struct WearwellApp: App {
     private let container: ModelContainer = {
-        let schema = Schema(versionedSchema: WearwellSchemaV6.self)
+        let schema = Schema(versionedSchema: WearwellSchemaV8.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
+        let existingStore = FileManager.default.fileExists(atPath: configuration.url.path)
         // Existing personal-local installs used an unversioned SwiftData store.
         // Automatic lightweight migration can adopt it; a staged plan cannot.
-        do { return try ModelContainer(for: schema, configurations: [configuration]) }
+        do {
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            try PersonalSubcategoryMigration.runIfNeeded(in: container, existingStore: existingStore)
+            return container
+        }
         catch { fatalError("Unable to create Wearwell store: \(error)") }
     }()
 
@@ -90,6 +105,29 @@ struct WearwellApp: App {
                 }
         }
         .modelContainer(container)
+    }
+}
+
+enum PersonalSubcategoryMigration {
+    private static let marker = "didMigratePersonalSubcategoriesV7"
+
+    @MainActor
+    static func runIfNeeded(
+        in container: ModelContainer,
+        existingStore: Bool,
+        defaults: UserDefaults = .standard
+    ) throws {
+        guard !defaults.bool(forKey: marker) else { return }
+        // Existing installs keep the exact taxonomy they had. A newly created
+        // store intentionally starts empty, so these never become app defaults.
+        if existingStore {
+            let context = container.mainContext
+            if try context.fetchCount(FetchDescriptor<WardrobeSubcategory>()) == 0 {
+                WardrobeSubcategory.legacyUserValues.forEach(context.insert)
+                try context.save()
+            }
+        }
+        defaults.set(true, forKey: marker)
     }
 }
 

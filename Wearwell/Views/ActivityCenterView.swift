@@ -50,7 +50,7 @@ enum ActivityEntryBuilder {
 
     static func normalized(_ state: String?) -> ActivityState {
         guard let state else { return .complete }
-        if ["pending", "submitting", "queued", "processing", "analyzing"].contains(state) { return .active }
+        if ["pending", "submitting", "queued", "processing", "analyzing", "preparing"].contains(state) { return .active }
         if state == "failed" { return .failed }
         return .complete
     }
@@ -203,7 +203,7 @@ private struct ActivityShopResultsView: View {
                     EmptyState(icon: "bag", title: feed.state == "failed" ? "Search failed" : "Still working", message: feed.errorMessage ?? feed.progressStage ?? "Luna is finding products.")
                 } else {
                     ForEach(feed.products.filter { !feed.dismissedIDs.contains($0.id) }) { product in
-                        ShopProductCard(product: product, test: nil, dismiss: { dismiss(product) })
+                        ShopProductCard(product: product, dismiss: { dismiss(product) })
                     }
                 }
             }.padding()

@@ -2,6 +2,7 @@ import PhotosUI
 import SwiftData
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct WardrobeView: View {
     @Binding var showSettings: Bool
@@ -9,20 +10,33 @@ struct WardrobeView: View {
     var activityCount: Int
     @Query(sort: \Garment.createdAt, order: .reverse) private var garments: [Garment]
     @Query private var importDrafts: [ImportDraft]
+    @Query private var subcategories: [WardrobeSubcategory]
     @Environment(\.modelContext) private var context
     @State private var search = ""
     @State private var category: GarmentCategory?
-    @State private var subcategory: GarmentSubcategory?
+    @State private var subcategory: String?
     @State private var showAdd = false
+    @State private var draggedGarmentID: UUID?
+    @State private var draggedCategoryID: String?
+    @AppStorage("garmentCategoryOrder") private var categoryOrder = ""
 
-    private var filtered: [Garment] {
-        garments.filter { garment in
-            (category == nil || garment.category == category) &&
-            (subcategory == nil || garment.subcategory == subcategory) &&
-            (search.isEmpty || [garment.label, garment.color, garment.subcategory?.title ?? "", garment.tags, garment.occasion].joined(separator: " ").localizedCaseInsensitiveContains(search))
+    private var orderedGarments: [Garment] {
+        garments.sorted {
+            let lhs = $0.manualOrder ?? Int.min
+            let rhs = $1.manualOrder ?? Int.min
+            return lhs == rhs ? $0.createdAt > $1.createdAt : lhs < rhs
         }
     }
-    private var readyImportCount: Int { importDrafts.filter { $0.state == "ready" || $0.isUnread }.count }
+
+    private var filtered: [Garment] {
+        orderedGarments.filter { garment in
+            (category == nil || garment.category == category) &&
+            (subcategory == nil || garment.subcategoryRaw == subcategory) &&
+            (search.isEmpty || [garment.label, garment.color, subcategories.title(for: garment.subcategoryRaw, fallback: garment.category), garment.tags, garment.occasion].joined(separator: " ").localizedCaseInsensitiveContains(search))
+        }
+    }
+    private var orderedCategories: [GarmentCategory] { GarmentCategory.ordered(using: categoryOrder) }
+    private var readyImportCount: Int { importDrafts.filter { $0.state == "ready" }.count }
 
     private var cutoutNames: [String] {
         garments.map { $0.catalogAssetName.isEmpty ? $0.sourceAssetName : $0.catalogAssetName }
@@ -63,6 +77,19 @@ struct WardrobeView: View {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 18) {
                             ForEach(filtered) { garment in
                                 NavigationLink { GarmentDetailView(garment: garment) } label: { GarmentCard(garment: garment) }.buttonStyle(.plain)
+                                    .onDrag {
+                                        draggedGarmentID = garment.id
+                                        return NSItemProvider(object: garment.id.uuidString as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [.text],
+                                        delegate: DirectReorderDropDelegate(
+                                            targetID: garment.id,
+                                            draggedID: $draggedGarmentID,
+                                            move: moveGarment
+                                        )
+                                    )
+                                    .opacity(draggedGarmentID == garment.id ? 0.62 : 1)
                             }
                         }
                     }
@@ -74,7 +101,7 @@ struct WardrobeView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Button { showAdd = true } label: {
                     Image(systemName: "plus").overlay(alignment: .topTrailing) {
-                        if importDrafts.contains(where: \.isUnread) {
+                        if importDrafts.contains(where: { $0.state == "ready" && $0.isUnread }) {
                             Circle().fill(WearwellTheme.coral).frame(width: 7, height: 7).offset(x: 4, y: -3)
                         }
                     }
@@ -86,7 +113,8 @@ struct WardrobeView: View {
             NavigationStack {
                 AddClothesView(showSettings: $showSettings)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showAdd = false } } }
-            }.keyboardDismissToolbar()
+            }
+            .keyboardDismissToolbar()
         }
         .task(id: cutoutPreparationKey) {
             let names = cutoutNames
@@ -105,26 +133,62 @@ struct WardrobeView: View {
         }
     }
 
+    private func moveGarment(_ sourceID: UUID, _ targetID: UUID) {
+        var values = orderedGarments
+        guard let source = values.firstIndex(where: { $0.id == sourceID }),
+              let target = values.firstIndex(where: { $0.id == targetID }),
+              source != target else { return }
+        withAnimation(.snappy) {
+            values.move(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+            for (index, garment) in values.enumerated() { garment.manualOrder = index }
+        }
+        try? context.save()
+    }
+
     private var categoryStrip: some View {
         VStack(alignment: .leading, spacing: 9) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack {
                     Button("All") { category = nil; subcategory = nil }.buttonStyle(FilterButtonStyle(selected: category == nil))
-                    ForEach(GarmentCategory.allCases) { item in
-                        Button(item.title) { category = item; subcategory = nil }.buttonStyle(FilterButtonStyle(selected: category == item))
+                    ForEach(orderedCategories) { item in
+                        Button(item.title) { category = item; subcategory = nil }
+                            .buttonStyle(FilterButtonStyle(selected: category == item))
+                            .onDrag {
+                                draggedCategoryID = item.rawValue
+                                return NSItemProvider(object: item.rawValue as NSString)
+                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: DirectStringReorderDropDelegate(
+                                    targetID: item.rawValue,
+                                    draggedID: $draggedCategoryID,
+                                    move: moveCategory
+                                )
+                            )
                     }
                 }
             }
-            if let category, !GarmentSubcategory.options(for: category).isEmpty {
+            if let category, !subcategories.options(for: category).isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         Button("All") { subcategory = nil }.buttonStyle(FilterButtonStyle(selected: subcategory == nil))
-                        ForEach(GarmentSubcategory.options(for: category)) { item in
-                            Button(item.filterTitle) { subcategory = item }.buttonStyle(FilterButtonStyle(selected: subcategory == item))
+                        ForEach(subcategories.options(for: category)) { item in
+                            Button(item.name) { subcategory = item.value }.buttonStyle(FilterButtonStyle(selected: subcategory == item.value))
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func moveCategory(_ sourceID: String, _ targetID: String) {
+        var values = orderedCategories
+        guard let source = values.firstIndex(where: { $0.rawValue == sourceID }),
+              let target = values.firstIndex(where: { $0.rawValue == targetID }),
+              source != target else { return }
+        withAnimation(.snappy) {
+            values.move(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+            categoryOrder = values.map(\.rawValue).joined(separator: ",")
         }
     }
 }
@@ -142,12 +206,12 @@ struct GarmentDetailView: View {
     @Bindable var garment: Garment
     @Query(sort: \Outfit.updatedAt, order: .reverse) private var outfits: [Outfit]
     @Query private var garments: [Garment]
+    @Query private var subcategories: [WardrobeSubcategory]
     @EnvironmentObject private var companion: CompanionClient
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDelete = false
     @State private var showImageRegenerator = false
-    @AppStorage("savedOutfitViewMode") private var savedOutfitViewMode = "gallery"
 
     private var savedOutfits: [Outfit] {
         outfits.filter { $0.belongsInOutfitLibrary && $0.contains(garmentID: garment.id) }
@@ -209,45 +273,25 @@ struct GarmentDetailView: View {
                     Text("No saved outfits yet. Generate one with Luna or add this piece to a manual collage.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Picker("Outfit view", selection: $savedOutfitViewMode) {
-                        Label("Gallery", systemImage: "square.grid.2x2").tag("gallery")
-                        Label("Names", systemImage: "list.bullet").tag("names")
-                    }
-                    .pickerStyle(.segmented)
-
-                    if savedOutfitViewMode == "names" {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 12)], spacing: 12) {
                         ForEach(savedOutfits) { outfit in
                             NavigationLink {
                                 OutfitDetailView(outfit: outfit)
                             } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(outfit.title).font(.headline)
-                                    Text("\(outfit.layout.count) pieces · \(outfit.origin == .aiStyle ? "AI Style" : "Manual")")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
+                                CollagePreview(items: outfit.layout, garments: garments, candidate: nil)
+                                    .aspectRatio(0.8, contentMode: .fit)
+                                    .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
+                                    .overlay(alignment: .bottomTrailing) {
+                                        Text("\(outfit.layout.count) pieces")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(WearwellTheme.ink)
+                                            .padding(.horizontal, 8).padding(.vertical, 5)
+                                            .background(.ultraThinMaterial, in: Capsule())
+                                            .padding(8)
+                                    }
+                                    .accessibilityLabel(outfit.title)
                             }
-                        }
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 12)], spacing: 12) {
-                            ForEach(savedOutfits) { outfit in
-                                NavigationLink {
-                                    OutfitDetailView(outfit: outfit)
-                                } label: {
-                                    CollagePreview(items: outfit.layout, garments: garments, candidate: nil)
-                                        .aspectRatio(0.8, contentMode: .fit)
-                                        .background(WearwellTheme.paper, in: RoundedRectangle(cornerRadius: 16))
-                                        .overlay(alignment: .bottomTrailing) {
-                                            Text("\(outfit.layout.count) pieces")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(WearwellTheme.ink)
-                                                .padding(.horizontal, 8).padding(.vertical, 5)
-                                                .background(.ultraThinMaterial, in: Capsule())
-                                                .padding(8)
-                                        }
-                                        .accessibilityLabel(outfit.title)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -256,15 +300,16 @@ struct GarmentDetailView: View {
                 TextField("Name", text: $garment.label)
                 Picker("Category", selection: $garment.categoryRaw) { ForEach(GarmentCategory.allCases) { Text($0.title).tag($0.rawValue) } }
                     .onChange(of: garment.categoryRaw) { _, categoryRaw in
-                        guard let category = GarmentCategory(rawValue: categoryRaw), garment.subcategory?.category == category else {
+                        guard let selected = subcategories.first(where: { $0.value == garment.subcategoryRaw }),
+                              selected.categoryRaw == categoryRaw else {
                             garment.subcategoryRaw = nil; return
                         }
                     }
-                if !GarmentSubcategory.options(for: garment.category).isEmpty {
+                if !subcategories.options(for: garment.category).isEmpty {
                     Picker("Type", selection: $garment.subcategoryRaw) {
                         Text("Unspecified").tag(nil as String?)
-                        ForEach(GarmentSubcategory.options(for: garment.category)) { item in
-                            Text(item.title).tag(Optional(item.rawValue))
+                        ForEach(subcategories.options(for: garment.category)) { item in
+                            Text(item.name).tag(Optional(item.value))
                         }
                     }
                 }

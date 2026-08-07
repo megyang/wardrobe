@@ -4,7 +4,7 @@ export const SUBCATEGORIES = {
   outerwear: ["coverup", "sweater", "jacket", "coat"],
   dresses: [],
   shoes: [],
-  accessories: ["tights", "hat", "misc"]
+  accessories: ["tights", "hat", "purse", "jewelry", "misc"]
 };
 
 export const SUBCATEGORY_VALUES = ["none", ...new Set(Object.values(SUBCATEGORIES).flat())];

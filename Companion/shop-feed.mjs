@@ -41,6 +41,72 @@ export function deduplicateShopProducts(products) {
   return result;
 }
 
+function productText(product) {
+  return [product?.title, product?.description, product?.category, ...(product?.colors || []), ...(product?.tags || [])]
+    .filter(Boolean).join(" ").toLowerCase();
+}
+
+function terms(values) {
+  return (values || []).map(value => String(value).trim().toLowerCase()).filter(Boolean);
+}
+
+export function passesShoppingConstraints(product, preferences = {}) {
+  const text = productText(product);
+  if (terms(preferences.excludedCategories).some(value => text.includes(value))) return false;
+  if (terms(preferences.excludedColors).some(value => text.includes(value))) return false;
+  if (terms(preferences.excludedMaterials).some(value => text.includes(value))) return false;
+  const budget = Number(preferences.budgets?.[String(product?.category || "")]);
+  if (Number.isFinite(budget) && budget > 0 && Number(product?.currentPrice) > budget) return false;
+  return true;
+}
+
+export function shoppingTasteScore(product, preferences = {}, feedback = {}) {
+  const text = productText(product); let score = 0;
+  const preferredMaterials = terms(preferences.preferredMaterials);
+  const matchedMaterials = preferredMaterials.filter(value => text.includes(value)).length;
+  if (preferredMaterials.length) score += matchedMaterials ? Math.min(0.28, matchedMaterials * 0.14) : -0.04;
+
+  const natural = /\b(?:cotton|linen|wool|silk|hemp|cashmere|alpaca|tencel|lyocell)\b/.test(text);
+  const synthetic = /\b(?:polyester|acrylic|nylon|polyamide)\b/.test(text);
+  const construction = /\b(?:lined|double[- ]?knit|heavyweight|midweight|selvedge|jacquard|embroider|woven|ribbed|garment[- ]dyed)\b/.test(text);
+  const distinctive = /\b(?:asymmetric|sculptural|patchwork|embroider|jacquard|appliqu|contrast trim|novelty|handmade|artisan|statement)\b/.test(text);
+  const trend = /\b(?:micro|miniskirt|cutout|cut-out|viral|y2k|ultra cropped|bodycon|festival)\b/.test(text);
+  const quality = Math.max(0, Math.min(1, Number(preferences.qualityPriority ?? 0.65)));
+  const uniqueness = Math.max(0, Math.min(1, Number(preferences.uniquenessPreference ?? 0.55)));
+  const trendPreference = Math.max(0, Math.min(1, Number(preferences.trendPreference ?? 0.45)));
+  if (natural) score += 0.12 * quality;
+  if (construction) score += 0.10 * quality;
+  if (distinctive) score += 0.14 * uniqueness;
+  if (trend) score += 0.10 * trendPreference - 0.10 * (1 - trendPreference);
+
+  const price = Number(product?.currentPrice); const tier = String(preferences.priceTier || "mid");
+  if (Number.isFinite(price) && price > 0) {
+    const ranges = { budget: [0, 65], value: [25, 120], mid: [55, 260], premium: [140, Infinity] };
+    const [low, high] = ranges[tier] || ranges.mid;
+    score += price >= low && price <= high ? 0.12 : -0.06;
+  }
+  const fastFashion = String(preferences.fastFashionPreference || "minimize");
+  const disposableSignals = Number(trend) + Number(synthetic) + Number(Number.isFinite(price) && price > 0 && price < 30);
+  if (disposableSignals >= 2 && fastFashion === "avoid") score -= 0.16;
+  else if (disposableSignals >= 2 && fastFashion === "minimize") score -= 0.08;
+  else if (disposableSignals >= 2 && fastFashion === "open") score += 0.04;
+  const domain = String(product?.domain || "").toLowerCase(); const category = String(product?.category || "").toLowerCase();
+  const colors = (product?.colors || []).map(value => String(value).toLowerCase());
+  if (terms(feedback.savedDomains).includes(domain)) score += 0.10;
+  if (terms(feedback.savedCategories).includes(category)) score += 0.06;
+  if (colors.some(color => terms(feedback.savedColors).includes(color))) score += 0.04;
+  if (terms(feedback.dismissedDomains).includes(domain)) score -= 0.06;
+  if (terms(feedback.dismissedCategories).includes(category)) score -= 0.035;
+  return score + (product?.isPreferredRetailer ? 0.04 : 0);
+}
+
+export function prioritizeByShoppingTaste(products, preferences = {}, feedback = {}) {
+  return products.filter(product => passesShoppingConstraints(product, preferences))
+    .map((product, index) => ({ product, index, score: shoppingTasteScore(product, preferences, feedback) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(item => item.product);
+}
+
 export function appendRetailerDiverseProducts(published, wave, limit = 60, perPage = 2, perFeed = 4) {
   const ids = new Set(published.map(item => item.id));
   const feedCounts = new Map(); const pageCounts = new Map();
